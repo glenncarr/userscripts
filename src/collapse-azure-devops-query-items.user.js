@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.9
+// @version      1.2.10
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -40,7 +40,7 @@
     const GRIDO_COMMITMENT_DATA_INDEX = 6;
     const GRIDO_WORK_ITEM_TYPE_FIELD = 'System.WorkItemType';
     const GRIDO_COMMITMENT_FIELD = 'Custom.Commitment';
-    const PLACEHOLDER_COMMITMENT_PATTERN = /^20\d{2} \(Placeholder\)$/;
+    const PLACEHOLDER_COMMITMENT_TEXT = '20xx (placeholder)';
     const PLACEHOLDER_PRESENTATION_CLASS =
         'collapse-azure-devops-query-items-placeholder';
     const PLACEHOLDER_STYLE_ID =
@@ -478,8 +478,9 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
     }
 
     function isPlaceholderCommitment(commitment) {
-        return PLACEHOLDER_COMMITMENT_PATTERN.test(
-            normalizeCommitmentText(commitment),
+        return (
+            normalizeCommitmentText(commitment).toLowerCase() ===
+            PLACEHOLDER_COMMITMENT_TEXT
         );
     }
 
