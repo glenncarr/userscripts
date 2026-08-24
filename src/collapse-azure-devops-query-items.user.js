@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Collapse expanded top-level work items when an Azure DevOps query result is first rendered.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
@@ -35,6 +35,7 @@
     let initialCollapseComplete = false;
     let processing = false;
     let scheduled = false;
+    let pendingRunQueryRefresh = false;
     const renderedTitleCounts = new WeakMap();
     const unknownCountToken = Symbol('unknown-count');
 
@@ -326,6 +327,28 @@
             return;
         }
 
+        function normalizeMenuItemLabel(text) {
+            return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        }
+
+        function shouldArmRunQueryRefresh(target) {
+            if (!(target instanceof Element)) {
+                return false;
+            }
+
+            const menuItem = target.closest('button[role="menuitem"]');
+            if (!menuItem) {
+                return false;
+            }
+
+            const label = normalizeMenuItemLabel(menuItem.getAttribute('aria-label'));
+            if (label.endsWith('run query')) {
+                return true;
+            }
+
+            return normalizeMenuItemLabel(menuItem.textContent) === 'run query';
+        }
+
         scheduled = true;
         window.setTimeout(() => {
             scheduled = false;
@@ -401,11 +424,21 @@
         if (grid !== activeGrid) {
             activeGrid = grid;
             initialCollapseComplete = false;
+            if (pendingRunQueryRefresh) {
+                pendingRunQueryRefresh = false;
+            }
             scheduleProcessing();
             return;
         }
 
         if (!grid || !initialCollapseComplete) {
+            scheduleProcessing();
+            return;
+        }
+
+        if (pendingRunQueryRefresh) {
+            initialCollapseComplete = false;
+            pendingRunQueryRefresh = false;
             scheduleProcessing();
             return;
         }
@@ -427,6 +460,15 @@
             childList: true,
             subtree: true,
         });
+        document.addEventListener(
+            'click',
+            (event) => {
+                if (shouldArmRunQueryRefresh(event.target)) {
+                    pendingRunQueryRefresh = true;
+                }
+            },
+            true,
+        );
         scheduleProcessing(0);
     }
 
