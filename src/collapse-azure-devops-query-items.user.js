@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.11
+// @version      1.2.12
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -53,6 +53,17 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS},
 ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
     color: gray !important;
     font-style: italic !important;
+}
+`;
+    const SUPERSCRIPT_COUNT_CLASS =
+        'collapse-azure-devops-query-items-count-superscript';
+    const SUPERSCRIPT_STYLE_ID =
+        'collapse-azure-devops-query-items-superscript-style';
+    const SUPERSCRIPT_STYLE_TEXT = `
+${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
+    font-size: 0.75em !important;
+    vertical-align: super !important;
+    margin-left: 0.2em !important;
 }
 `;
 
@@ -534,6 +545,21 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         document.head.appendChild(style);
     }
 
+    function ensureSuperscriptStyles() {
+        if (!document.head) {
+            return;
+        }
+
+        if (document.getElementById(SUPERSCRIPT_STYLE_ID)) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = SUPERSCRIPT_STYLE_ID;
+        style.textContent = SUPERSCRIPT_STYLE_TEXT;
+        document.head.appendChild(style);
+    }
+
     function clearPlaceholderStyles(grid) {
         if (!grid) {
             return;
@@ -925,6 +951,8 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         const expandStates = findExpandStates(grid);
         const gridId = grid.id || '';
 
+        ensureSuperscriptStyles();
+
         getTopLevelRows(grid).forEach((row) => {
             const titleLink = row.querySelector('a.work-item-title-link');
             if (!titleLink) {
@@ -967,13 +995,20 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
             const titleText = titleLink.getAttribute('title') || titleLink.textContent || '';
             titleLink.setAttribute('title', titleText);
 
-            if (adjustedCollapsedChildrenCount === null) {
-                titleLink.textContent = titleText;
-            } else {
-                titleLink.textContent =
-                    adjustedCollapsedChildrenCount > 0
-                        ? `${titleText} (${adjustedCollapsedChildrenCount})`
-                        : titleText;
+            // Remove any existing superscript
+            titleLink.querySelectorAll(`.${SUPERSCRIPT_COUNT_CLASS}`).forEach(
+                (sup) => sup.remove(),
+            );
+
+            // Clear and rebuild title content
+            titleLink.textContent = titleText;
+
+            // Add count as superscript if needed
+            if (adjustedCollapsedChildrenCount !== null && adjustedCollapsedChildrenCount > 0) {
+                const sup = document.createElement('sup');
+                sup.className = SUPERSCRIPT_COUNT_CLASS;
+                sup.textContent = String(adjustedCollapsedChildrenCount);
+                titleLink.appendChild(sup);
             }
 
             renderedTitleCounts.set(titleLink, nextCount);
