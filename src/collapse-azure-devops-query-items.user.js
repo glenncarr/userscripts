@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.4
+// @version      1.2.5
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
 // @match        http://tfs/*/_queries/*
@@ -31,6 +31,8 @@
     const RENDER_SETTLE_DELAY = 120;
     const CLICK_SETTLE_DELAY = 80;
     const MAX_COLLAPSE_CLICKS = 1000;
+    const PATCH_TITLE_TEXT = 'patch';
+    const EXCLUDED_PATCH_DESCENDANT_TITLE = 'tkc product release';
 
     let activeGrid = null;
     let initialCollapseComplete = false;
@@ -189,6 +191,58 @@
         return count;
     }
 
+    function getNormalizedTitleText(text) {
+        return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function getRowTitleText(row) {
+        const titleLink = row.querySelector('a.work-item-title-link');
+        if (!titleLink) {
+            return '';
+        }
+
+        return titleLink.getAttribute('title') || titleLink.textContent || '';
+    }
+
+    function isPatchTopLevelRow(row) {
+        return getNormalizedTitleText(getRowTitleText(row)) === PATCH_TITLE_TEXT;
+    }
+
+    function isExcludedPatchDescendantRow(row) {
+        return (
+            getNormalizedTitleText(getRowTitleText(row)) ===
+            EXCLUDED_PATCH_DESCENDANT_TITLE
+        );
+    }
+
+    function getRenderedExcludedPatchDescendantCount(topLevelRow) {
+        if (!isPatchTopLevelRow(topLevelRow)) {
+            return 0;
+        }
+
+        let excludedCount = 0;
+        let current = topLevelRow.nextElementSibling;
+
+        while (current && current.matches('.grid-row[role="row"]')) {
+            const level = Number.parseInt(
+                current.getAttribute('aria-level') || '',
+                10,
+            );
+
+            if (Number.isNaN(level) || level <= 1) {
+                break;
+            }
+
+            if (isExcludedPatchDescendantRow(current)) {
+                excludedCount += 1;
+            }
+
+            current = current.nextElementSibling;
+        }
+
+        return excludedCount;
+    }
+
     function resolveCollapsedDescendantCount(
         row,
         expandStates,
@@ -255,10 +309,15 @@
                 gridId,
                 renderedFallbackCounts,
             );
-            const nextCount =
+            const excludedCount = getRenderedExcludedPatchDescendantCount(row);
+            const adjustedCollapsedChildrenCount =
                 collapsedChildrenCount === null
+                    ? null
+                    : Math.max(0, collapsedChildrenCount - excludedCount);
+            const nextCount =
+                adjustedCollapsedChildrenCount === null
                     ? unknownCountToken
-                    : collapsedChildrenCount;
+                    : adjustedCollapsedChildrenCount;
             const previousCount = renderedTitleCounts.get(titleLink);
             if (previousCount === nextCount) {
                 return;
@@ -267,12 +326,12 @@
             const titleText = titleLink.getAttribute('title') || titleLink.textContent || '';
             titleLink.setAttribute('title', titleText);
 
-            if (collapsedChildrenCount === null) {
+            if (adjustedCollapsedChildrenCount === null) {
                 titleLink.textContent = titleText;
             } else {
                 titleLink.textContent =
-                    collapsedChildrenCount > 0
-                        ? `${titleText} (${collapsedChildrenCount})`
+                    adjustedCollapsedChildrenCount > 0
+                        ? `${titleText} (${adjustedCollapsedChildrenCount})`
                         : titleText;
             }
 
