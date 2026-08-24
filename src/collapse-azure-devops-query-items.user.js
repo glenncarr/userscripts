@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.17
+// @version      1.2.18
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -876,6 +876,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         const gridId = grid.id || '';
         const topLevelRows = getTopLevelRows(grid);
         const countsByDataIndex = {};
+        const validatedDataIndices = new Set();
 
         topLevelRows.forEach((row) => {
             const dataIndex = getRowDataIndex(row, gridId);
@@ -892,12 +893,12 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
         const provider = findGridDataProvider(grid);
         if (!provider) {
-            return countsByDataIndex;
+            return null;
         }
 
         const workItemEntries = getGridWorkItemEntries(provider);
         if (workItemEntries.length === 0) {
-            return countsByDataIndex;
+            return null;
         }
 
         const workItemIdByIndex = new Map();
@@ -927,16 +928,17 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
             topLevelIds.add(normalizedWorkItemId);
             topLevelById.set(normalizedWorkItemId, dataIndex);
+            validatedDataIndices.add(dataIndex);
         });
 
         if (!allTopLevelRowsMapped) {
-            return countsByDataIndex;
+            return null;
         }
 
         for (const { dataIndex, workItemId } of workItemEntries) {
-            const workItemType = getGridWorkItemType(provider, workItemId);
+            const workItemType = getGridWorkItemType(provider, workItemId, dataIndex);
             if (workItemType === null) {
-                return countsByDataIndex;
+                return null;
             }
 
             const normalizedWorkItemId = normalizeWorkItemId(workItemId);
@@ -963,7 +965,9 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             }
         }
 
-        return countsByDataIndex;
+        return validatedDataIndices.size === Object.keys(countsByDataIndex).length
+            ? countsByDataIndex
+            : null;
     }
 
     function buildDescendantCountsByTypeRenderedFallback(grid) {
@@ -1017,7 +1021,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
     function captureDescendantCountsByType(grid) {
         const gridCounts = buildDescendantCountsByType(grid);
-        if (Object.keys(gridCounts).length > 0) {
+        if (gridCounts !== null) {
             return gridCounts;
         }
 
