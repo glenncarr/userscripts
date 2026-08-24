@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.16
+// @version      1.2.17
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -879,7 +879,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
         topLevelRows.forEach((row) => {
             const dataIndex = getRowDataIndex(row, gridId);
-            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+            if (dataIndex === null) {
                 return;
             }
 
@@ -914,25 +914,29 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
         const topLevelById = new Map();
         const topLevelIds = new Set();
+        let allTopLevelRowsMapped = true;
 
         topLevelRows.forEach((row) => {
             const dataIndex = getRowDataIndex(row, gridId);
             const workItemId = workItemIdByIndex.get(dataIndex);
             const normalizedWorkItemId = normalizeWorkItemId(workItemId);
             if (dataIndex === null || normalizedWorkItemId === null) {
+                allTopLevelRowsMapped = false;
                 return;
             }
 
             topLevelIds.add(normalizedWorkItemId);
-            if (Object.prototype.hasOwnProperty.call(countsByDataIndex, dataIndex)) {
-                topLevelById.set(normalizedWorkItemId, dataIndex);
-            }
+            topLevelById.set(normalizedWorkItemId, dataIndex);
         });
+
+        if (!allTopLevelRowsMapped) {
+            return countsByDataIndex;
+        }
 
         for (const { dataIndex, workItemId } of workItemEntries) {
             const workItemType = getGridWorkItemType(provider, workItemId);
             if (workItemType === null) {
-                continue;
+                return countsByDataIndex;
             }
 
             const normalizedWorkItemId = normalizeWorkItemId(workItemId);
@@ -969,7 +973,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
         topLevelRows.forEach((row) => {
             const dataIndex = getRowDataIndex(row, gridId);
-            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+            if (dataIndex === null) {
                 return;
             }
 
@@ -1128,7 +1132,6 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             let tkcCount = 0;
 
             if (
-                isPatchTopLevelRow(row) &&
                 dataIndex !== null &&
                 Object.prototype.hasOwnProperty.call(
                     state.descendantCountsByType,
