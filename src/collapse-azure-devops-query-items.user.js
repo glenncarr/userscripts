@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.10
+// @version      1.2.11
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -32,7 +32,10 @@
     const CLICK_SETTLE_DELAY = 80;
     const MAX_COLLAPSE_CLICKS = 1000;
     const PATCH_WORK_ITEM_TYPE_TEXT = 'patch';
-    const EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE = 'tkc product release';
+    const EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPES = new Set([
+        'tkc product release',
+        'patch',
+    ]);
     const WORK_ITEM_TYPE_CELL_INDEX = 3;
     const TITLE_CELL_INDEX = 4;
     const COMMITMENT_CELL_INDEX = 8;
@@ -585,8 +588,8 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
     }
 
     function isExcludedPatchDescendantTypeRow(row) {
-        return (
-            getRowWorkItemType(row) === EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE
+        return EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPES.has(
+            getRowWorkItemType(row),
         );
     }
 
@@ -793,7 +796,7 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
                 return null;
             }
 
-            if (workItemType !== EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE) {
+            if (!EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPES.has(workItemType)) {
                 continue;
             }
 
