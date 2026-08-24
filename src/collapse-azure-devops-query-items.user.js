@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.12
+// @version      1.2.13
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -1007,7 +1007,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             if (adjustedCollapsedChildrenCount !== null && adjustedCollapsedChildrenCount > 0) {
                 const sup = document.createElement('sup');
                 sup.className = SUPERSCRIPT_COUNT_CLASS;
-                sup.textContent = String(adjustedCollapsedChildrenCount);
+                sup.textContent = `(${adjustedCollapsedChildrenCount})`;
                 titleLink.appendChild(sup);
             }
 
