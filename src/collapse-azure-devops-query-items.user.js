@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.1
+// @version      1.2.2
 // @description  Collapse expanded top-level work items when an Azure DevOps query result is first rendered.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
@@ -356,7 +356,7 @@
             return true;
         }
 
-        return normalizeMenuItemLabel(menuItem.textContent) === 'run query';
+        return normalizeMenuItemLabel(menuItem.textContent).endsWith('run query');
     }
 
     function getResultSignature(grid) {
@@ -387,6 +387,19 @@
         pendingGridEventBound = null;
     }
 
+    function completePendingRunQueryRefresh() {
+        if (!pendingRunQueryRefresh) {
+            return;
+        }
+
+        clearPendingRenderedHandler();
+        pendingRunQueryRefresh = false;
+        pendingResultSignature = null;
+        pendingRenderedEventSeen = false;
+        initialCollapseComplete = false;
+        scheduleProcessing(0);
+    }
+
     function armPendingRunQueryRefresh() {
         const grid = findGrid();
         pendingRunQueryRefresh = true;
@@ -399,7 +412,7 @@
             pendingGridEventBound = grid;
             jq(grid).one('queryResultsRendered.collapseRunQueryRefresh', () => {
                 pendingRenderedEventSeen = true;
-                scheduleProcessing(0);
+                completePendingRunQueryRefresh();
             });
         }
     }
@@ -503,12 +516,7 @@
                 return;
             }
 
-            clearPendingRenderedHandler();
-            pendingRunQueryRefresh = false;
-            pendingResultSignature = null;
-            pendingRenderedEventSeen = false;
-            initialCollapseComplete = false;
-            scheduleProcessing(0);
+            completePendingRunQueryRefresh();
             return;
         }
 
