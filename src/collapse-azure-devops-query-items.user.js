@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.6
+// @version      1.2.7
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
 // @match        http://tfs/*/_queries/*
@@ -32,7 +32,7 @@
     const CLICK_SETTLE_DELAY = 80;
     const MAX_COLLAPSE_CLICKS = 1000;
     const PATCH_WORK_ITEM_TYPE_TEXT = 'patch';
-    const EXCLUDED_PATCH_DESCENDANT_TITLE = 'tkc product release';
+    const EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE = 'tkc product release';
 
     let activeGrid = null;
     let initialCollapseComplete = false;
@@ -213,7 +213,7 @@
         return getNormalizedTitleText(cell.textContent || '');
     }
 
-    function getTopLevelRowWorkItemType(row) {
+    function getRowWorkItemType(row) {
         const iconType = getNormalizedTitleText(
             row.querySelector('.work-item-type-icon[aria-label]')?.getAttribute(
                 'aria-label',
@@ -228,13 +228,12 @@
     }
 
     function isPatchTopLevelRow(row) {
-        return getTopLevelRowWorkItemType(row) === PATCH_WORK_ITEM_TYPE_TEXT;
+        return getRowWorkItemType(row) === PATCH_WORK_ITEM_TYPE_TEXT;
     }
 
-    function isExcludedPatchDescendantRow(row) {
+    function isExcludedPatchDescendantTypeRow(row) {
         return (
-            getNormalizedTitleText(getRowTitleText(row)) ===
-            EXCLUDED_PATCH_DESCENDANT_TITLE
+            getRowWorkItemType(row) === EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE
         );
     }
 
@@ -256,7 +255,7 @@
                 break;
             }
 
-            if (isExcludedPatchDescendantRow(current)) {
+            if (isExcludedPatchDescendantTypeRow(current)) {
                 excludedCount += 1;
             }
 
@@ -310,13 +309,96 @@
                 return;
             }
 
+            function findGridDataProvider(grid) {
+                const enhancements = getGridEnhancements(grid);
+                if (!enhancements) {
+                    return null;
+                }
+
+                const candidates = Array.isArray(enhancements)
+                    ? enhancements
+                    : Object.values(enhancements);
+
+                for (const candidate of candidates) {
+                    if (
+                        candidate &&
+                        typeof candidate === 'object' &&
+                        Array.isArray(candidate._workItems) &&
+                        candidate._parentWorkItemIds &&
+                        candidate._pageData
+                    ) {
+                        return candidate;
+                    }
+                }
+
+                return null;
+            }
+
+            function captureExcludedCountsByTopLevelRow(grid) {
+                const countsByDataIndex = {};
+                const provider = findGridDataProvider(grid);
+                if (!provider) {
+                    return countsByDataIndex;
+                }
+
+                const workItems = provider._workItems;
+                const parentByIndex = provider._parentWorkItemIds || {};
+                const pageData = provider._pageData || {};
+                const topLevelById = new Map();
+
+                getTopLevelRows(grid).forEach((row) => {
+                    const dataIndex = getRowDataIndex(row, grid.id || '');
+                    if (dataIndex === null) {
+                        return;
+                    }
+
+                    const workItemId = workItems[dataIndex];
+                    if (workItemId === undefined || workItemId === null) {
+                        return;
+                    }
+
+                    if (isPatchTopLevelRow(row)) {
+                        topLevelById.set(String(workItemId), dataIndex);
+                        countsByDataIndex[dataIndex] = 0;
+                    }
+                });
+
+                for (let i = 0; i < workItems.length; i += 1) {
+                    const workItemId = workItems[i];
+                    if (workItemId === undefined || workItemId === null) {
+                        continue;
+                    }
+
+                    const parentId = parentByIndex[i];
+                    const topLevelDataIndex = topLevelById.get(String(parentId));
+                    if (topLevelDataIndex === undefined) {
+                        continue;
+                    }
+
+                    const rowData = pageData[workItemId];
+                    const workItemType = getNormalizedTitleText(
+                        Array.isArray(rowData) ? rowData[1] : '',
+                    );
+
+                    if (workItemType === EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE) {
+                        countsByDataIndex[topLevelDataIndex] += 1;
+                    }
+                }
+
+                return countsByDataIndex;
+            }
+
             fallbackCounts[dataIndex] = getRenderedDescendantCount(row);
         });
 
         return fallbackCounts;
     }
 
-    function updateTopLevelTitleCounts(grid, renderedFallbackCounts = null) {
+    function updateTopLevelTitleCounts(
+        grid,
+        renderedFallbackCounts = null,
+        excludedFallbackCounts = null,
+    ) {
         const expandStates = findExpandStates(grid);
         const gridId = grid.id || '';
 
@@ -332,7 +414,17 @@
                 gridId,
                 renderedFallbackCounts,
             );
-            const excludedCount = getRenderedExcludedPatchDescendantCount(row);
+            let excludedCount = 0;
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (
+                excludedFallbackCounts &&
+                dataIndex !== null &&
+                Object.prototype.hasOwnProperty.call(excludedFallbackCounts, dataIndex)
+            ) {
+                excludedCount = excludedFallbackCounts[dataIndex];
+            } else {
+                excludedCount = getRenderedExcludedPatchDescendantCount(row);
+            }
             const adjustedCollapsedChildrenCount =
                 collapsedChildrenCount === null
                     ? null
@@ -533,6 +625,7 @@
             }
 
             const renderedFallbackCounts = captureRenderedFallbackCounts(grid);
+            const excludedFallbackCounts = captureExcludedCountsByTopLevelRow(grid);
             const clicks = await collapseExpandedTopLevelRows(grid);
             await wait(CLICK_SETTLE_DELAY);
 
@@ -541,7 +634,11 @@
                 return;
             }
 
-            updateTopLevelTitleCounts(grid, renderedFallbackCounts);
+            updateTopLevelTitleCounts(
+                grid,
+                renderedFallbackCounts,
+                excludedFallbackCounts,
+            );
             selectFirstTopLevelRow(grid);
             initialCollapseComplete = !getExpandedIcon(grid);
 
