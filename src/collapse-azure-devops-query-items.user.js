@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.7
+// @version      1.2.8
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
 // @match        http://tfs/*/_queries/*
@@ -43,6 +43,7 @@
     let pendingRenderedEventSeen = false;
     let pendingGridEventBound = null;
     const renderedTitleCounts = new WeakMap();
+    const gridCountStates = new WeakMap();
     const unknownCountToken = Symbol('unknown-count');
 
     function isQueryRoute() {
@@ -126,17 +127,25 @@
         return jq(grid).data('tfs-enhancements') || null;
     }
 
+    function getEnhancementCandidates(enhancements) {
+        if (!enhancements || typeof enhancements !== 'object') {
+            return [];
+        }
+
+        if (Array.isArray(enhancements)) {
+            return enhancements;
+        }
+
+        return [enhancements, ...Object.values(enhancements)];
+    }
+
     function findExpandStates(grid) {
         const enhancements = getGridEnhancements(grid);
         if (!enhancements) {
             return null;
         }
 
-        const candidates = Array.isArray(enhancements)
-            ? enhancements
-            : Object.values(enhancements);
-
-        for (const candidate of candidates) {
+        for (const candidate of getEnhancementCandidates(enhancements)) {
             if (
                 candidate &&
                 typeof candidate === 'object' &&
@@ -148,6 +157,108 @@
         }
 
         return null;
+    }
+
+    function findGridDataProvider(grid) {
+        const enhancements = getGridEnhancements(grid);
+        if (!enhancements) {
+            return null;
+        }
+
+        for (const candidate of getEnhancementCandidates(enhancements)) {
+            if (
+                candidate &&
+                typeof candidate === 'object' &&
+                candidate._workItems &&
+                candidate._parentWorkItemIds &&
+                candidate._pageData
+            ) {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    function getCollectionValue(collection, key) {
+        if (!collection) {
+            return undefined;
+        }
+
+        if (collection instanceof Map) {
+            const value = collection.get(key);
+            return value === undefined
+                ? collection.get(String(key))
+                : value;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(collection, key)) {
+            return collection[key];
+        }
+
+        const stringKey = String(key);
+        return Object.prototype.hasOwnProperty.call(collection, stringKey)
+            ? collection[stringKey]
+            : undefined;
+    }
+
+    function getGridWorkItemEntries(provider) {
+        const workItems = provider?._workItems;
+        if (Array.isArray(workItems)) {
+            return workItems
+                .map((workItemId, dataIndex) => ({ dataIndex, workItemId }))
+                .filter(
+                    ({ workItemId }) =>
+                        workItemId !== undefined && workItemId !== null,
+                );
+        }
+
+        if (!workItems || typeof workItems !== 'object') {
+            return [];
+        }
+
+        return Object.keys(workItems)
+            .map((key) => ({
+                dataIndex: Number.parseInt(key, 10),
+                workItemId: workItems[key],
+            }))
+            .filter(
+                ({ dataIndex, workItemId }) =>
+                    Number.isInteger(dataIndex) &&
+                    workItemId !== undefined &&
+                    workItemId !== null,
+            );
+    }
+
+    function getParentWorkItemId(provider, dataIndex, workItemId) {
+        const parentWorkItemIds = provider?._parentWorkItemIds;
+        const parentByIndex = getCollectionValue(parentWorkItemIds, dataIndex);
+        if (parentByIndex !== undefined) {
+            return parentByIndex;
+        }
+
+        return getCollectionValue(parentWorkItemIds, workItemId);
+    }
+
+    function normalizeWorkItemId(workItemId) {
+        if (
+            workItemId === undefined ||
+            workItemId === null ||
+            workItemId === ''
+        ) {
+            return null;
+        }
+
+        return String(workItemId);
+    }
+
+    function getGridWorkItemType(provider, workItemId) {
+        const rowData = getCollectionValue(provider?._pageData, workItemId);
+        if (!rowData || typeof rowData !== 'object') {
+            return null;
+        }
+
+        return getNormalizedTitleText(rowData[1]);
     }
 
     function getRowDataIndex(row, gridId) {
@@ -193,15 +304,6 @@
 
     function getNormalizedTitleText(text) {
         return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    }
-
-    function getRowTitleText(row) {
-        const titleLink = row.querySelector('a.work-item-title-link');
-        if (!titleLink) {
-            return '';
-        }
-
-        return titleLink.getAttribute('title') || titleLink.textContent || '';
     }
 
     function getNormalizedRowTextFromCell(row, index) {
@@ -309,89 +411,243 @@
                 return;
             }
 
-            function findGridDataProvider(grid) {
-                const enhancements = getGridEnhancements(grid);
-                if (!enhancements) {
-                    return null;
-                }
-
-                const candidates = Array.isArray(enhancements)
-                    ? enhancements
-                    : Object.values(enhancements);
-
-                for (const candidate of candidates) {
-                    if (
-                        candidate &&
-                        typeof candidate === 'object' &&
-                        Array.isArray(candidate._workItems) &&
-                        candidate._parentWorkItemIds &&
-                        candidate._pageData
-                    ) {
-                        return candidate;
-                    }
-                }
-
-                return null;
-            }
-
-            function captureExcludedCountsByTopLevelRow(grid) {
-                const countsByDataIndex = {};
-                const provider = findGridDataProvider(grid);
-                if (!provider) {
-                    return countsByDataIndex;
-                }
-
-                const workItems = provider._workItems;
-                const parentByIndex = provider._parentWorkItemIds || {};
-                const pageData = provider._pageData || {};
-                const topLevelById = new Map();
-
-                getTopLevelRows(grid).forEach((row) => {
-                    const dataIndex = getRowDataIndex(row, grid.id || '');
-                    if (dataIndex === null) {
-                        return;
-                    }
-
-                    const workItemId = workItems[dataIndex];
-                    if (workItemId === undefined || workItemId === null) {
-                        return;
-                    }
-
-                    if (isPatchTopLevelRow(row)) {
-                        topLevelById.set(String(workItemId), dataIndex);
-                        countsByDataIndex[dataIndex] = 0;
-                    }
-                });
-
-                for (let i = 0; i < workItems.length; i += 1) {
-                    const workItemId = workItems[i];
-                    if (workItemId === undefined || workItemId === null) {
-                        continue;
-                    }
-
-                    const parentId = parentByIndex[i];
-                    const topLevelDataIndex = topLevelById.get(String(parentId));
-                    if (topLevelDataIndex === undefined) {
-                        continue;
-                    }
-
-                    const rowData = pageData[workItemId];
-                    const workItemType = getNormalizedTitleText(
-                        Array.isArray(rowData) ? rowData[1] : '',
-                    );
-
-                    if (workItemType === EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE) {
-                        countsByDataIndex[topLevelDataIndex] += 1;
-                    }
-                }
-
-                return countsByDataIndex;
-            }
-
             fallbackCounts[dataIndex] = getRenderedDescendantCount(row);
         });
 
         return fallbackCounts;
+    }
+
+    function captureRenderedExcludedCounts(grid) {
+        const gridId = grid.id || '';
+        const excludedCounts = {};
+
+        getTopLevelRows(grid).forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null) {
+                return;
+            }
+
+            excludedCounts[dataIndex] =
+                getRenderedExcludedPatchDescendantCount(row);
+        });
+
+        return excludedCounts;
+    }
+
+    function findTopLevelAncestorId(
+        provider,
+        dataIndex,
+        workItemId,
+        topLevelById,
+        workItemIdByIndex,
+        dataIndexByWorkItemId,
+    ) {
+        let parentWorkItemId = getParentWorkItemId(
+            provider,
+            dataIndex,
+            workItemId,
+        );
+        const visitedIds = new Set();
+
+        while (parentWorkItemId !== undefined && parentWorkItemId !== null) {
+            const normalizedParentId = normalizeWorkItemId(parentWorkItemId);
+            if (
+                normalizedParentId === null ||
+                visitedIds.has(normalizedParentId)
+            ) {
+                return null;
+            }
+
+            if (topLevelById.has(normalizedParentId)) {
+                return normalizedParentId;
+            }
+
+            visitedIds.add(normalizedParentId);
+            const parentDataIndex = dataIndexByWorkItemId.get(
+                normalizedParentId,
+            );
+            if (parentDataIndex === undefined) {
+                return null;
+            }
+
+            const parentId = workItemIdByIndex.get(parentDataIndex);
+            parentWorkItemId = getParentWorkItemId(
+                provider,
+                parentDataIndex,
+                parentId,
+            );
+        }
+
+        return null;
+    }
+
+    function captureGridExcludedCounts(grid) {
+        const provider = findGridDataProvider(grid);
+        if (!provider) {
+            return null;
+        }
+
+        const workItemEntries = getGridWorkItemEntries(provider);
+        const topLevelRows = getTopLevelRows(grid);
+        if (workItemEntries.length === 0 || topLevelRows.length === 0) {
+            return null;
+        }
+
+        const workItemIdByIndex = new Map();
+        const dataIndexByWorkItemId = new Map();
+        workItemEntries.forEach(({ dataIndex, workItemId }) => {
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (normalizedWorkItemId === null) {
+                return;
+            }
+
+            workItemIdByIndex.set(dataIndex, workItemId);
+            dataIndexByWorkItemId.set(normalizedWorkItemId, dataIndex);
+        });
+
+        const gridId = grid.id || '';
+        const topLevelById = new Map();
+        const topLevelIds = new Set();
+        const countsByDataIndex = {};
+        let allTopLevelRowsMapped = true;
+
+        topLevelRows.forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            const workItemId = workItemIdByIndex.get(dataIndex);
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (dataIndex === null || normalizedWorkItemId === null) {
+                allTopLevelRowsMapped = false;
+                return;
+            }
+
+            topLevelIds.add(normalizedWorkItemId);
+            const gridType = getGridWorkItemType(provider, workItemId);
+            const rowType = getRowWorkItemType(row);
+            const isPatch =
+                rowType === PATCH_WORK_ITEM_TYPE_TEXT ||
+                (!rowType && gridType === PATCH_WORK_ITEM_TYPE_TEXT);
+            if (isPatch) {
+                topLevelById.set(normalizedWorkItemId, dataIndex);
+                countsByDataIndex[dataIndex] = 0;
+            }
+        });
+
+        if (!allTopLevelRowsMapped) {
+            return null;
+        }
+
+        for (const { dataIndex, workItemId } of workItemEntries) {
+            const workItemType = getGridWorkItemType(provider, workItemId);
+            if (workItemType === null) {
+                return null;
+            }
+
+            if (workItemType !== EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE) {
+                continue;
+            }
+
+            const parentWorkItemId = getParentWorkItemId(
+                provider,
+                dataIndex,
+                workItemId,
+            );
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (
+                parentWorkItemId === undefined &&
+                !topLevelIds.has(normalizedWorkItemId)
+            ) {
+                return null;
+            }
+
+            if (topLevelIds.has(normalizedWorkItemId)) {
+                continue;
+            }
+
+            const topLevelId = findTopLevelAncestorId(
+                provider,
+                dataIndex,
+                workItemId,
+                topLevelById,
+                workItemIdByIndex,
+                dataIndexByWorkItemId,
+            );
+            if (topLevelId === null) {
+                continue;
+            }
+
+            const topLevelDataIndex = topLevelById.get(topLevelId);
+            countsByDataIndex[topLevelDataIndex] += 1;
+        }
+
+        return countsByDataIndex;
+    }
+
+    function captureExcludedCountsByTopLevelRow(grid) {
+        return captureGridExcludedCounts(grid) || captureRenderedExcludedCounts(grid);
+    }
+
+    function getGridCountState(grid) {
+        let state = gridCountStates.get(grid);
+        if (!state) {
+            state = {
+                renderedFallbackCounts: {},
+                excludedCounts: {},
+            };
+            gridCountStates.set(grid, state);
+        }
+
+        return state;
+    }
+
+    function refreshRenderedFallbackCounts(grid, state) {
+        const capturedCounts = captureRenderedFallbackCounts(grid);
+        const gridId = grid.id || '';
+
+        getTopLevelRows(grid).forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null) {
+                return;
+            }
+
+            if (
+                row.getAttribute('aria-expanded') === 'true' ||
+                !Object.prototype.hasOwnProperty.call(
+                    state.renderedFallbackCounts,
+                    dataIndex,
+                )
+            ) {
+                state.renderedFallbackCounts[dataIndex] =
+                    capturedCounts[dataIndex] || 0;
+            }
+        });
+    }
+
+    function refreshExcludedCounts(grid, state) {
+        const gridCounts = captureGridExcludedCounts(grid);
+        if (gridCounts) {
+            state.excludedCounts = gridCounts;
+            return;
+        }
+
+        const renderedCounts = captureRenderedExcludedCounts(grid);
+        const gridId = grid.id || '';
+        getTopLevelRows(grid).forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (
+                dataIndex === null ||
+                !isPatchTopLevelRow(row) ||
+                (row.getAttribute('aria-expanded') !== 'true' &&
+                    renderedCounts[dataIndex] === 0 &&
+                    Object.prototype.hasOwnProperty.call(
+                        state.excludedCounts,
+                        dataIndex,
+                    ))
+            ) {
+                return;
+            }
+
+            state.excludedCounts[dataIndex] = renderedCounts[dataIndex] || 0;
+        });
     }
 
     function updateTopLevelTitleCounts(
@@ -399,6 +655,19 @@
         renderedFallbackCounts = null,
         excludedFallbackCounts = null,
     ) {
+        const state = getGridCountState(grid);
+        if (renderedFallbackCounts) {
+            state.renderedFallbackCounts = renderedFallbackCounts;
+        } else {
+            refreshRenderedFallbackCounts(grid, state);
+        }
+
+        if (excludedFallbackCounts) {
+            state.excludedCounts = excludedFallbackCounts;
+        } else {
+            refreshExcludedCounts(grid, state);
+        }
+
         const expandStates = findExpandStates(grid);
         const gridId = grid.id || '';
 
@@ -412,17 +681,20 @@
                 row,
                 expandStates,
                 gridId,
-                renderedFallbackCounts,
+                state.renderedFallbackCounts,
             );
             let excludedCount = 0;
             const dataIndex = getRowDataIndex(row, gridId);
             if (
-                excludedFallbackCounts &&
+                isPatchTopLevelRow(row) &&
                 dataIndex !== null &&
-                Object.prototype.hasOwnProperty.call(excludedFallbackCounts, dataIndex)
+                Object.prototype.hasOwnProperty.call(
+                    state.excludedCounts,
+                    dataIndex,
+                )
             ) {
-                excludedCount = excludedFallbackCounts[dataIndex];
-            } else {
+                excludedCount = state.excludedCounts[dataIndex];
+            } else if (isPatchTopLevelRow(row)) {
                 excludedCount = getRenderedExcludedPatchDescendantCount(row);
             }
             const adjustedCollapsedChildrenCount =
