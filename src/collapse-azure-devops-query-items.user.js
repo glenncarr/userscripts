@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.13
+// @version      1.2.14
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -862,8 +862,89 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         return countsByDataIndex;
     }
 
-    function captureExcludedCountsByTopLevelRow(grid) {
-        return captureGridExcludedCounts(grid) || captureRenderedExcludedCounts(grid);
+    function categorizeDescendantType(workItemType) {
+        if (workItemType === PATCH_WORK_ITEM_TYPE_TEXT) {
+            return 'patch';
+        }
+        if (workItemType === 'tkc product release') {
+            return 'tkc';
+        }
+        return 'other';
+    }
+
+    function buildDescendantCountsByType(grid) {
+        const gridId = grid.id || '';
+        const topLevelRows = getTopLevelRows(grid);
+        const countsByDataIndex = {};
+
+        topLevelRows.forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+                return;
+            }
+
+            countsByDataIndex[dataIndex] = {
+                other: 0,
+                patch: 0,
+                tkc: 0,
+            };
+        });
+
+        const provider = findGridDataProvider(grid);
+        if (!provider) {
+            return countsByDataIndex;
+        }
+
+        const workItems = provider._workItems || [];
+        const parentByIndex = provider._parentWorkItemIds || {};
+        const pageData = provider._pageData || {};
+        const topLevelById = new Map();
+
+        topLevelRows.forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+                return;
+            }
+
+            const workItemId = workItems[dataIndex];
+            if (workItemId !== undefined && workItemId !== null) {
+                topLevelById.set(String(workItemId), dataIndex);
+            }
+        });
+
+        for (let i = 0; i < workItems.length; i += 1) {
+            const workItemId = workItems[i];
+            if (workItemId === undefined || workItemId === null) {
+                continue;
+            }
+
+            const parentId = parentByIndex[i];
+            const topLevelDataIndex = topLevelById.get(String(parentId));
+            if (topLevelDataIndex === undefined) {
+                continue;
+            }
+
+            const rowData = pageData[workItemId];
+            const workItemType = getNormalizedTitleText(
+                Array.isArray(rowData) ? rowData[1] : '',
+            );
+
+            const category = categorizeDescendantType(workItemType);
+            if (Object.prototype.hasOwnProperty.call(countsByDataIndex, topLevelDataIndex)) {
+                countsByDataIndex[topLevelDataIndex][category] += 1;
+            }
+        }
+
+        return countsByDataIndex;
+    }
+
+    function captureDescendantCountsByType(grid) {
+        const gridCounts = buildDescendantCountsByType(grid);
+        if (Object.keys(gridCounts).length > 0) {
+            return gridCounts;
+        }
+
+        return null;
     }
 
     function getGridCountState(grid) {
@@ -871,7 +952,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         if (!state) {
             state = {
                 renderedFallbackCounts: {},
-                excludedCounts: {},
+                descendantCountsByType: {},
             };
             gridCountStates.set(grid, state);
         }
@@ -933,7 +1014,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     function updateTopLevelTitleCounts(
         grid,
         renderedFallbackCounts = null,
-        excludedFallbackCounts = null,
+        descendantCountsByType = null,
     ) {
         const state = getGridCountState(grid);
         if (renderedFallbackCounts) {
@@ -942,16 +1023,19 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             refreshRenderedFallbackCounts(grid, state);
         }
 
-        if (excludedFallbackCounts) {
-            state.excludedCounts = excludedFallbackCounts;
+        if (descendantCountsByType) {
+            state.descendantCountsByType = descendantCountsByType;
         } else {
-            refreshExcludedCounts(grid, state);
+            const capturedCounts = captureDescendantCountsByType(grid);
+            if (capturedCounts) {
+                state.descendantCountsByType = capturedCounts;
+            }
         }
+
+        ensureSuperscriptStyles();
 
         const expandStates = findExpandStates(grid);
         const gridId = grid.id || '';
-
-        ensureSuperscriptStyles();
 
         getTopLevelRows(grid).forEach((row) => {
             const titleLink = row.querySelector('a.work-item-title-link');
@@ -965,30 +1049,38 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
                 gridId,
                 state.renderedFallbackCounts,
             );
-            let excludedCount = 0;
             const dataIndex = getRowDataIndex(row, gridId);
+            let otherCount = 0;
+            let patchCount = 0;
+            let tkcCount = 0;
+
             if (
                 isPatchTopLevelRow(row) &&
                 dataIndex !== null &&
                 Object.prototype.hasOwnProperty.call(
-                    state.excludedCounts,
+                    state.descendantCountsByType,
                     dataIndex,
                 )
             ) {
-                excludedCount = state.excludedCounts[dataIndex];
-            } else if (isPatchTopLevelRow(row)) {
-                excludedCount = getRenderedExcludedPatchDescendantCount(row);
+                const counts = state.descendantCountsByType[dataIndex];
+                otherCount = counts.other || 0;
+                patchCount = counts.patch || 0;
+                tkcCount = counts.tkc || 0;
             }
-            const adjustedCollapsedChildrenCount =
+
+            const countTuple =
                 collapsedChildrenCount === null
                     ? null
-                    : Math.max(0, collapsedChildrenCount - excludedCount);
-            const nextCount =
-                adjustedCollapsedChildrenCount === null
-                    ? unknownCountToken
-                    : adjustedCollapsedChildrenCount;
+                    : { other: otherCount, patch: patchCount, tkc: tkcCount };
+
             const previousCount = renderedTitleCounts.get(titleLink);
-            if (previousCount === nextCount) {
+            if (
+                previousCount &&
+                typeof previousCount === 'object' &&
+                previousCount.other === countTuple?.other &&
+                previousCount.patch === countTuple?.patch &&
+                previousCount.tkc === countTuple?.tkc
+            ) {
                 return;
             }
 
@@ -1004,14 +1096,21 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             titleLink.textContent = titleText;
 
             // Add count as superscript if needed
-            if (adjustedCollapsedChildrenCount !== null && adjustedCollapsedChildrenCount > 0) {
+            if (countTuple && (countTuple.other > 0 || countTuple.patch > 0 || countTuple.tkc > 0)) {
                 const sup = document.createElement('sup');
                 sup.className = SUPERSCRIPT_COUNT_CLASS;
-                sup.textContent = `(${adjustedCollapsedChildrenCount})`;
+                sup.textContent =
+                    '(' +
+                    String(countTuple.other) +
+                    '/' +
+                    String(countTuple.patch) +
+                    '/' +
+                    String(countTuple.tkc) +
+                    ')';
                 titleLink.appendChild(sup);
             }
 
-            renderedTitleCounts.set(titleLink, nextCount);
+            renderedTitleCounts.set(titleLink, countTuple);
         });
     }
 
@@ -1190,7 +1289,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
             updatePlaceholderStyles(grid);
             const renderedFallbackCounts = captureRenderedFallbackCounts(grid);
-            const excludedFallbackCounts = captureExcludedCountsByTopLevelRow(grid);
+            const descendantCountsByType = captureDescendantCountsByType(grid);
             const clicks = await collapseExpandedTopLevelRows(grid);
             await wait(CLICK_SETTLE_DELAY);
 
@@ -1203,7 +1302,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             updateTopLevelTitleCounts(
                 grid,
                 renderedFallbackCounts,
-                excludedFallbackCounts,
+                descendantCountsByType,
             );
             selectFirstTopLevelRow(grid);
             initialCollapseComplete = !getExpandedIcon(grid);
