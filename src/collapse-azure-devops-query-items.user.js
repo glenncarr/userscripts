@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.5
+// @version      1.2.6
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
 // @match        http://tfs/*/_queries/*
@@ -31,7 +31,7 @@
     const RENDER_SETTLE_DELAY = 120;
     const CLICK_SETTLE_DELAY = 80;
     const MAX_COLLAPSE_CLICKS = 1000;
-    const PATCH_TITLE_TEXT = 'patch';
+    const PATCH_WORK_ITEM_TYPE_TEXT = 'patch';
     const EXCLUDED_PATCH_DESCENDANT_TITLE = 'tkc product release';
 
     let activeGrid = null;
@@ -204,8 +204,31 @@
         return titleLink.getAttribute('title') || titleLink.textContent || '';
     }
 
+    function getNormalizedRowTextFromCell(row, index) {
+        const cell = row.querySelectorAll('[role="gridcell"]')[index];
+        if (!cell) {
+            return '';
+        }
+
+        return getNormalizedTitleText(cell.textContent || '');
+    }
+
+    function getTopLevelRowWorkItemType(row) {
+        const iconType = getNormalizedTitleText(
+            row.querySelector('.work-item-type-icon[aria-label]')?.getAttribute(
+                'aria-label',
+            ) || '',
+        );
+        if (iconType) {
+            return iconType;
+        }
+
+        // In this grid, Work Item Type is currently the 4th cell (index 3).
+        return getNormalizedRowTextFromCell(row, 3);
+    }
+
     function isPatchTopLevelRow(row) {
-        return getNormalizedTitleText(getRowTitleText(row)) === PATCH_TITLE_TEXT;
+        return getTopLevelRowWorkItemType(row) === PATCH_WORK_ITEM_TYPE_TEXT;
     }
 
     function isExcludedPatchDescendantRow(row) {
