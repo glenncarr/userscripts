@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  Collapse expanded top-level work items when an Azure DevOps query result is first rendered.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
@@ -36,6 +36,9 @@
     let processing = false;
     let scheduled = false;
     let pendingRunQueryRefresh = false;
+    let pendingResultSignature = null;
+    let pendingRenderedEventSeen = false;
+    let pendingGridEventBound = null;
     const renderedTitleCounts = new WeakMap();
     const unknownCountToken = Symbol('unknown-count');
 
@@ -327,33 +330,78 @@
             return;
         }
 
-        function normalizeMenuItemLabel(text) {
-            return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        }
-
-        function shouldArmRunQueryRefresh(target) {
-            if (!(target instanceof Element)) {
-                return false;
-            }
-
-            const menuItem = target.closest('button[role="menuitem"]');
-            if (!menuItem) {
-                return false;
-            }
-
-            const label = normalizeMenuItemLabel(menuItem.getAttribute('aria-label'));
-            if (label.endsWith('run query')) {
-                return true;
-            }
-
-            return normalizeMenuItemLabel(menuItem.textContent) === 'run query';
-        }
-
         scheduled = true;
         window.setTimeout(() => {
             scheduled = false;
             processGrid();
         }, delay);
+    }
+
+    function normalizeMenuItemLabel(text) {
+        return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function shouldArmRunQueryRefresh(target) {
+        if (!(target instanceof Element)) {
+            return false;
+        }
+
+        const menuItem = target.closest('button[role="menuitem"]');
+        if (!menuItem) {
+            return false;
+        }
+
+        const label = normalizeMenuItemLabel(menuItem.getAttribute('aria-label'));
+        if (label.endsWith('run query')) {
+            return true;
+        }
+
+        return normalizeMenuItemLabel(menuItem.textContent) === 'run query';
+    }
+
+    function getResultSignature(grid) {
+        const firstRow = grid.querySelector(TOP_LEVEL_ROW_SELECTOR);
+        if (!firstRow) {
+            return 'rows:0';
+        }
+
+        const key = firstRow.getAttribute('data-id') || firstRow.id || '';
+        const text = (
+            firstRow.querySelector('a.work-item-title-link')?.getAttribute('title') ||
+            firstRow.querySelector('a.work-item-title-link')?.textContent ||
+            ''
+        ).trim();
+        return `rows:${getTopLevelRows(grid).length}|first:${key}|text:${text}`;
+    }
+
+    function clearPendingRenderedHandler() {
+        if (!pendingGridEventBound) {
+            return;
+        }
+
+        const jq = window.jQuery;
+        if (typeof jq === 'function') {
+            jq(pendingGridEventBound).off('.collapseRunQueryRefresh');
+        }
+
+        pendingGridEventBound = null;
+    }
+
+    function armPendingRunQueryRefresh() {
+        const grid = findGrid();
+        pendingRunQueryRefresh = true;
+        pendingRenderedEventSeen = false;
+        pendingResultSignature = grid ? getResultSignature(grid) : null;
+        clearPendingRenderedHandler();
+
+        const jq = window.jQuery;
+        if (grid && typeof jq === 'function') {
+            pendingGridEventBound = grid;
+            jq(grid).one('queryResultsRendered.collapseRunQueryRefresh', () => {
+                pendingRenderedEventSeen = true;
+                scheduleProcessing(0);
+            });
+        }
     }
 
     async function processGrid() {
@@ -422,11 +470,14 @@
         const grid = findGrid();
 
         if (grid !== activeGrid) {
+            if (pendingRunQueryRefresh) {
+                clearPendingRenderedHandler();
+                pendingRunQueryRefresh = false;
+                pendingResultSignature = null;
+                pendingRenderedEventSeen = false;
+            }
             activeGrid = grid;
             initialCollapseComplete = false;
-            if (pendingRunQueryRefresh) {
-                pendingRunQueryRefresh = false;
-            }
             scheduleProcessing();
             return;
         }
@@ -437,9 +488,27 @@
         }
 
         if (pendingRunQueryRefresh) {
-            initialCollapseComplete = false;
+            const gridChanged = grid !== pendingGridEventBound;
+            const rowsCleared = getTopLevelRows(grid).length === 0;
+            const signatureChanged =
+                pendingResultSignature !== null &&
+                getResultSignature(grid) !== pendingResultSignature;
+
+            if (
+                !pendingRenderedEventSeen &&
+                !gridChanged &&
+                !rowsCleared &&
+                !signatureChanged
+            ) {
+                return;
+            }
+
+            clearPendingRenderedHandler();
             pendingRunQueryRefresh = false;
-            scheduleProcessing();
+            pendingResultSignature = null;
+            pendingRenderedEventSeen = false;
+            initialCollapseComplete = false;
+            scheduleProcessing(0);
             return;
         }
 
@@ -464,7 +533,7 @@
             'click',
             (event) => {
                 if (shouldArmRunQueryRefresh(event.target)) {
-                    pendingRunQueryRefresh = true;
+                    armPendingRunQueryRefresh();
                 }
             },
             true,
