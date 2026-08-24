@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.0.0
+// @version      1.1.0
 // @description  Collapse expanded top-level work items when an Azure DevOps query result is first rendered.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
@@ -35,6 +35,8 @@
     let initialCollapseComplete = false;
     let processing = false;
     let scheduled = false;
+    const renderedTitleCounts = new WeakMap();
+    const unknownCountToken = Symbol('unknown-count');
 
     function isQueryRoute() {
         const path = window.location.pathname.toLowerCase();
@@ -106,6 +108,171 @@
 
     function getCollapseAllControl(grid) {
         return grid.querySelector(COLLAPSE_ALL_SELECTOR);
+    }
+
+    function getGridEnhancements(grid) {
+        const jq = window.jQuery;
+        if (typeof jq !== 'function') {
+            return null;
+        }
+
+        return jq(grid).data('tfs-enhancements') || null;
+    }
+
+    function findExpandStates(grid) {
+        const enhancements = getGridEnhancements(grid);
+        if (!enhancements) {
+            return null;
+        }
+
+        const candidates = Array.isArray(enhancements)
+            ? enhancements
+            : Object.values(enhancements);
+
+        for (const candidate of candidates) {
+            if (
+                candidate &&
+                typeof candidate === 'object' &&
+                candidate._expandStates &&
+                typeof candidate._expandStates === 'object'
+            ) {
+                return candidate._expandStates;
+            }
+        }
+
+        return null;
+    }
+
+    function getRowDataIndex(row, gridId) {
+        const jq = window.jQuery;
+        if (typeof jq === 'function') {
+            const rowInfo = jq(row).data('grid-row-info');
+            if (rowInfo && Number.isInteger(rowInfo.dataIndex)) {
+                return rowInfo.dataIndex;
+            }
+        }
+
+        if (gridId && row.id.startsWith(`row_${gridId}_`)) {
+            const suffix = row.id.slice(`row_${gridId}_`.length);
+            const parsedFromId = Number.parseInt(suffix, 10);
+            if (!Number.isNaN(parsedFromId)) {
+                return parsedFromId;
+            }
+        }
+
+        return null;
+    }
+
+    function getRenderedDescendantCount(row) {
+        let count = 0;
+        let current = row.nextElementSibling;
+
+        while (current && current.matches('.grid-row[role="row"]')) {
+            const level = Number.parseInt(
+                current.getAttribute('aria-level') || '',
+                10,
+            );
+
+            if (Number.isNaN(level) || level <= 1) {
+                break;
+            }
+
+            count += 1;
+            current = current.nextElementSibling;
+        }
+
+        return count;
+    }
+
+    function resolveCollapsedDescendantCount(
+        row,
+        expandStates,
+        gridId,
+        renderedFallbackCounts,
+    ) {
+        const dataIndex = getRowDataIndex(row, gridId);
+        if (
+            expandStates &&
+            dataIndex !== null &&
+            Object.prototype.hasOwnProperty.call(expandStates, dataIndex)
+        ) {
+            const rawCount = expandStates[dataIndex];
+            if (typeof rawCount === 'number' && Number.isFinite(rawCount)) {
+                return Math.abs(rawCount);
+            }
+        }
+
+        if (
+            renderedFallbackCounts &&
+            dataIndex !== null &&
+            Object.prototype.hasOwnProperty.call(renderedFallbackCounts, dataIndex)
+        ) {
+            return renderedFallbackCounts[dataIndex];
+        }
+
+        const rowExpanded = row.getAttribute('aria-expanded');
+        if (rowExpanded === 'false') {
+            return getRenderedDescendantCount(row);
+        }
+
+        return null;
+    }
+
+    function captureRenderedFallbackCounts(grid) {
+        const gridId = grid.id || '';
+        const fallbackCounts = {};
+
+        getTopLevelRows(grid).forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null) {
+                return;
+            }
+
+            fallbackCounts[dataIndex] = getRenderedDescendantCount(row);
+        });
+
+        return fallbackCounts;
+    }
+
+    function updateTopLevelTitleCounts(grid, renderedFallbackCounts = null) {
+        const expandStates = findExpandStates(grid);
+        const gridId = grid.id || '';
+
+        getTopLevelRows(grid).forEach((row) => {
+            const titleLink = row.querySelector('a.work-item-title-link');
+            if (!titleLink) {
+                return;
+            }
+
+            const collapsedChildrenCount = resolveCollapsedDescendantCount(
+                row,
+                expandStates,
+                gridId,
+                renderedFallbackCounts,
+            );
+            const nextCount =
+                collapsedChildrenCount === null
+                    ? unknownCountToken
+                    : collapsedChildrenCount;
+            const previousCount = renderedTitleCounts.get(titleLink);
+            if (previousCount === nextCount) {
+                return;
+            }
+
+            const titleText = titleLink.getAttribute('title') || titleLink.textContent || '';
+            titleLink.setAttribute('title', titleText);
+
+            if (collapsedChildrenCount === null) {
+                titleLink.textContent = titleText;
+            } else {
+                titleLink.textContent =
+                    collapsedChildrenCount > 0
+                        ? `${titleText} (${collapsedChildrenCount})`
+                        : titleText;
+            }
+
+            renderedTitleCounts.set(titleLink, nextCount);
+        });
     }
 
     function selectFirstTopLevelRow(grid) {
@@ -198,6 +365,7 @@
                 return;
             }
 
+            const renderedFallbackCounts = captureRenderedFallbackCounts(grid);
             const clicks = await collapseExpandedTopLevelRows(grid);
             await wait(CLICK_SETTLE_DELAY);
 
@@ -206,6 +374,7 @@
                 return;
             }
 
+            updateTopLevelTitleCounts(grid, renderedFallbackCounts);
             selectFirstTopLevelRow(grid);
             initialCollapseComplete = !getExpandedIcon(grid);
 
@@ -240,6 +409,8 @@
             scheduleProcessing();
             return;
         }
+
+        updateTopLevelTitleCounts(grid);
 
         if (getTopLevelRows(grid).length === 0) {
             initialCollapseComplete = false;
