@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.3
+// @version      1.2.4
+// @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
