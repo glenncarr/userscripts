@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.8
+// @version      1.2.9
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
-// @description  Collapse expanded top-level work items when Azure DevOps query results first render or Run query is selected.
+// @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -33,6 +33,25 @@
     const MAX_COLLAPSE_CLICKS = 1000;
     const PATCH_WORK_ITEM_TYPE_TEXT = 'patch';
     const EXCLUDED_PATCH_DESCENDANT_WORK_ITEM_TYPE = 'tkc product release';
+    const WORK_ITEM_TYPE_CELL_INDEX = 3;
+    const TITLE_CELL_INDEX = 4;
+    const COMMITMENT_CELL_INDEX = 8;
+    const GRIDO_WORK_ITEM_TYPE_DATA_INDEX = 1;
+    const GRIDO_COMMITMENT_DATA_INDEX = 6;
+    const GRIDO_WORK_ITEM_TYPE_FIELD = 'System.WorkItemType';
+    const GRIDO_COMMITMENT_FIELD = 'Custom.Commitment';
+    const PLACEHOLDER_COMMITMENT_PATTERN = /^20\d{2} \(Placeholder\)$/;
+    const PLACEHOLDER_PRESENTATION_CLASS =
+        'collapse-azure-devops-query-items-placeholder';
+    const PLACEHOLDER_STYLE_ID =
+        'collapse-azure-devops-query-items-placeholder-style';
+    const PLACEHOLDER_STYLE_TEXT = `
+${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS},
+${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
+    color: gray !important;
+    font-style: italic !important;
+}
+`;
 
     let activeGrid = null;
     let initialCollapseComplete = false;
@@ -180,6 +199,26 @@
         return null;
     }
 
+    function findGridWorkItemDataProvider(grid) {
+        const enhancements = getGridEnhancements(grid);
+        if (!enhancements) {
+            return null;
+        }
+
+        for (const candidate of getEnhancementCandidates(enhancements)) {
+            if (
+                candidate &&
+                typeof candidate === 'object' &&
+                candidate._workItems &&
+                candidate._pageData
+            ) {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     function getCollectionValue(collection, key) {
         if (!collection) {
             return undefined;
@@ -230,6 +269,45 @@
             );
     }
 
+    function getGridWorkItemData(provider, workItemId, dataIndex = null) {
+        const pageData = provider?._pageData;
+        if (!pageData) {
+            return null;
+        }
+
+        let rowData;
+        if (workItemId !== undefined && workItemId !== null) {
+            rowData = getCollectionValue(pageData, workItemId);
+        }
+
+        if (
+            rowData === undefined &&
+            dataIndex !== null &&
+            dataIndex !== undefined
+        ) {
+            rowData = getCollectionValue(pageData, dataIndex);
+        }
+
+        return rowData && typeof rowData === 'object' ? rowData : null;
+    }
+
+    function getGridPageDataValue(rowData, dataIndex, fieldName) {
+        if (!rowData || typeof rowData !== 'object') {
+            return undefined;
+        }
+
+        if (Array.isArray(rowData)) {
+            return rowData[dataIndex];
+        }
+
+        const valueByIndex = getCollectionValue(rowData, dataIndex);
+        if (valueByIndex !== undefined) {
+            return valueByIndex;
+        }
+
+        return getCollectionValue(rowData, fieldName);
+    }
+
     function getParentWorkItemId(provider, dataIndex, workItemId) {
         const parentWorkItemIds = provider?._parentWorkItemIds;
         const parentByIndex = getCollectionValue(parentWorkItemIds, dataIndex);
@@ -252,13 +330,38 @@
         return String(workItemId);
     }
 
-    function getGridWorkItemType(provider, workItemId) {
-        const rowData = getCollectionValue(provider?._pageData, workItemId);
-        if (!rowData || typeof rowData !== 'object') {
+    function getGridWorkItemType(provider, workItemId, dataIndex = null) {
+        const rowData = getGridWorkItemData(provider, workItemId, dataIndex);
+        if (!rowData) {
             return null;
         }
 
-        return getNormalizedTitleText(rowData[1]);
+        return getNormalizedTitleText(
+            getGridPageDataValue(
+                rowData,
+                GRIDO_WORK_ITEM_TYPE_DATA_INDEX,
+                GRIDO_WORK_ITEM_TYPE_FIELD,
+            ),
+        );
+    }
+
+    function getGridWorkItemCommitment(
+        provider,
+        workItemId,
+        dataIndex = null,
+    ) {
+        const rowData = getGridWorkItemData(provider, workItemId, dataIndex);
+        if (!rowData) {
+            return '';
+        }
+
+        return normalizeCommitmentText(
+            getGridPageDataValue(
+                rowData,
+                GRIDO_COMMITMENT_DATA_INDEX,
+                GRIDO_COMMITMENT_FIELD,
+            ),
+        );
     }
 
     function getRowDataIndex(row, gridId) {
@@ -279,6 +382,25 @@
         }
 
         return null;
+    }
+
+    function getRowWorkItemId(provider, row, gridId) {
+        const dataIndex = getRowDataIndex(row, gridId);
+        if (dataIndex !== null) {
+            const workItemId = getCollectionValue(
+                provider?._workItems,
+                dataIndex,
+            );
+            if (workItemId !== undefined && workItemId !== null) {
+                return workItemId;
+            }
+        }
+
+        return (
+            row.getAttribute('data-id') ||
+            row.getAttribute('data-work-item-id') ||
+            null
+        );
     }
 
     function getRenderedDescendantCount(row) {
@@ -303,11 +425,19 @@
     }
 
     function getNormalizedTitleText(text) {
-        return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        return String(text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function normalizeCommitmentText(text) {
+        return String(text ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getRowCell(row, index) {
+        return row.querySelectorAll('[role="gridcell"]')[index] || null;
     }
 
     function getNormalizedRowTextFromCell(row, index) {
-        const cell = row.querySelectorAll('[role="gridcell"]')[index];
+        const cell = getRowCell(row, index);
         if (!cell) {
             return '';
         }
@@ -326,7 +456,127 @@
         }
 
         // In this grid, Work Item Type is currently the 4th cell (index 3).
-        return getNormalizedRowTextFromCell(row, 3);
+        return getNormalizedRowTextFromCell(row, WORK_ITEM_TYPE_CELL_INDEX);
+    }
+
+    function getRowCommitment(row) {
+        const cell = getRowCell(row, COMMITMENT_CELL_INDEX);
+        if (!cell) {
+            return '';
+        }
+
+        return normalizeCommitmentText(cell.textContent || '');
+    }
+
+    function getRowTitlePresentation(row) {
+        const titleCell = getRowCell(row, TITLE_CELL_INDEX);
+        const titleLink =
+            titleCell?.querySelector('a.work-item-title-link') ||
+            row.querySelector('a.work-item-title-link');
+
+        return { titleCell, titleLink };
+    }
+
+    function isPlaceholderCommitment(commitment) {
+        return PLACEHOLDER_COMMITMENT_PATTERN.test(
+            normalizeCommitmentText(commitment),
+        );
+    }
+
+    function getGridRowWorkItemType(grid, row, provider) {
+        const rowType = getRowWorkItemType(row);
+        if (rowType) {
+            return rowType;
+        }
+
+        const gridId = grid.id || '';
+        const dataIndex = getRowDataIndex(row, gridId);
+        const workItemId = getRowWorkItemId(provider, row, gridId);
+        return getGridWorkItemType(provider, workItemId, dataIndex) || '';
+    }
+
+    function getGridRowCommitment(grid, row, provider) {
+        const rowCommitment = getRowCommitment(row);
+        if (rowCommitment) {
+            return rowCommitment;
+        }
+
+        const gridId = grid.id || '';
+        const dataIndex = getRowDataIndex(row, gridId);
+        const workItemId = getRowWorkItemId(provider, row, gridId);
+        return getGridWorkItemCommitment(provider, workItemId, dataIndex);
+    }
+
+    function isPlaceholderPatchRow(grid, row, provider) {
+        return (
+            getGridRowWorkItemType(grid, row, provider) ===
+                PATCH_WORK_ITEM_TYPE_TEXT &&
+            isPlaceholderCommitment(getGridRowCommitment(grid, row, provider))
+        );
+    }
+
+    function ensurePlaceholderStyles() {
+        if (!document.head) {
+            return;
+        }
+
+        if (document.getElementById(PLACEHOLDER_STYLE_ID)) {
+            return;
+        }
+
+        const style = document.createElement('style');
+        style.id = PLACEHOLDER_STYLE_ID;
+        style.textContent = PLACEHOLDER_STYLE_TEXT;
+        document.head.appendChild(style);
+    }
+
+    function clearPlaceholderStyles(grid) {
+        if (!grid) {
+            return;
+        }
+
+        grid.querySelectorAll(`.${PLACEHOLDER_PRESENTATION_CLASS}`).forEach(
+            (element) => element.classList.remove(PLACEHOLDER_PRESENTATION_CLASS),
+        );
+    }
+
+    function updatePlaceholderStyles(grid) {
+        if (!grid) {
+            return;
+        }
+
+        ensurePlaceholderStyles();
+        const provider = findGridWorkItemDataProvider(grid);
+
+        grid.querySelectorAll('.grid-row[role="row"]').forEach((row) => {
+            const shouldStyle = isPlaceholderPatchRow(grid, row, provider);
+            const { titleCell, titleLink } = getRowTitlePresentation(row);
+
+            row.classList.toggle(
+                PLACEHOLDER_PRESENTATION_CLASS,
+                shouldStyle,
+            );
+            row.querySelectorAll(
+                `.${PLACEHOLDER_PRESENTATION_CLASS}`,
+            ).forEach((element) => {
+                if (element !== titleCell && element !== titleLink) {
+                    element.classList.remove(PLACEHOLDER_PRESENTATION_CLASS);
+                }
+            });
+
+            if (titleCell) {
+                titleCell.classList.toggle(
+                    PLACEHOLDER_PRESENTATION_CLASS,
+                    shouldStyle,
+                );
+            }
+            if (titleLink) {
+                titleLink.classList.toggle(
+                    PLACEHOLDER_PRESENTATION_CLASS,
+                    shouldStyle,
+                );
+            }
+        });
     }
 
     function isPatchTopLevelRow(row) {
@@ -872,17 +1122,20 @@
         const grid = findGrid();
 
         if (!grid) {
+            clearPlaceholderStyles(activeGrid);
             activeGrid = null;
             initialCollapseComplete = false;
             return;
         }
 
         if (grid !== activeGrid) {
+            clearPlaceholderStyles(activeGrid);
             activeGrid = grid;
             initialCollapseComplete = false;
         }
 
         if (initialCollapseComplete) {
+            updatePlaceholderStyles(grid);
             return;
         }
 
@@ -896,6 +1149,7 @@
                 return;
             }
 
+            updatePlaceholderStyles(grid);
             const renderedFallbackCounts = captureRenderedFallbackCounts(grid);
             const excludedFallbackCounts = captureExcludedCountsByTopLevelRow(grid);
             const clicks = await collapseExpandedTopLevelRows(grid);
@@ -906,6 +1160,7 @@
                 return;
             }
 
+            updatePlaceholderStyles(grid);
             updateTopLevelTitleCounts(
                 grid,
                 renderedFallbackCounts,
@@ -941,16 +1196,21 @@
                 pendingResultSignature = null;
                 pendingRenderedEventSeen = false;
             }
+            clearPlaceholderStyles(activeGrid);
             activeGrid = grid;
             initialCollapseComplete = false;
+            updatePlaceholderStyles(grid);
             scheduleProcessing();
             return;
         }
 
         if (!grid || !initialCollapseComplete) {
+            updatePlaceholderStyles(grid);
             scheduleProcessing();
             return;
         }
+
+        updatePlaceholderStyles(grid);
 
         if (pendingRunQueryRefresh) {
             const gridChanged = grid !== pendingGridEventBound;
@@ -985,8 +1245,24 @@
             return;
         }
 
+        ensurePlaceholderStyles();
         observer.observe(document.documentElement, {
             childList: true,
+            attributes: true,
+            attributeFilter: [
+                'aria-expanded',
+                'aria-label',
+                'aria-level',
+                'aria-rowindex',
+                'class',
+                'data-id',
+                'data-index',
+                'data-row-index',
+                'data-work-item-id',
+                'id',
+                'title',
+            ],
+            characterData: true,
             subtree: true,
         });
         document.addEventListener(
