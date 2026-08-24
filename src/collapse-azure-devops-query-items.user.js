@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.15
+// @version      1.2.16
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -895,42 +895,66 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             return countsByDataIndex;
         }
 
-        const workItems = provider._workItems || [];
-        const parentByIndex = provider._parentWorkItemIds || {};
-        const pageData = provider._pageData || {};
-        const topLevelById = new Map();
+        const workItemEntries = getGridWorkItemEntries(provider);
+        if (workItemEntries.length === 0) {
+            return countsByDataIndex;
+        }
 
-        topLevelRows.forEach((row) => {
-            const dataIndex = getRowDataIndex(row, gridId);
-            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+        const workItemIdByIndex = new Map();
+        const dataIndexByWorkItemId = new Map();
+        workItemEntries.forEach(({ dataIndex, workItemId }) => {
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (normalizedWorkItemId === null) {
                 return;
             }
 
-            const workItemId = workItems[dataIndex];
-            if (workItemId !== undefined && workItemId !== null) {
-                topLevelById.set(String(workItemId), dataIndex);
+            workItemIdByIndex.set(dataIndex, workItemId);
+            dataIndexByWorkItemId.set(normalizedWorkItemId, dataIndex);
+        });
+
+        const topLevelById = new Map();
+        const topLevelIds = new Set();
+
+        topLevelRows.forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            const workItemId = workItemIdByIndex.get(dataIndex);
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (dataIndex === null || normalizedWorkItemId === null) {
+                return;
+            }
+
+            topLevelIds.add(normalizedWorkItemId);
+            if (Object.prototype.hasOwnProperty.call(countsByDataIndex, dataIndex)) {
+                topLevelById.set(normalizedWorkItemId, dataIndex);
             }
         });
 
-        for (let i = 0; i < workItems.length; i += 1) {
-            const workItemId = workItems[i];
-            if (workItemId === undefined || workItemId === null) {
+        for (const { dataIndex, workItemId } of workItemEntries) {
+            const workItemType = getGridWorkItemType(provider, workItemId);
+            if (workItemType === null) {
                 continue;
             }
 
-            const parentId = parentByIndex[i];
-            const topLevelDataIndex = topLevelById.get(String(parentId));
-            if (topLevelDataIndex === undefined) {
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (topLevelIds.has(normalizedWorkItemId)) {
                 continue;
             }
 
-            const rowData = pageData[workItemId];
-            const workItemType = getNormalizedTitleText(
-                Array.isArray(rowData) ? rowData[1] : '',
+            const topLevelId = findTopLevelAncestorId(
+                provider,
+                dataIndex,
+                workItemId,
+                topLevelById,
+                workItemIdByIndex,
+                dataIndexByWorkItemId,
             );
+            if (topLevelId === null) {
+                continue;
+            }
 
-            const category = categorizeDescendantType(workItemType);
+            const topLevelDataIndex = topLevelById.get(topLevelId);
             if (Object.prototype.hasOwnProperty.call(countsByDataIndex, topLevelDataIndex)) {
+                const category = categorizeDescendantType(workItemType);
                 countsByDataIndex[topLevelDataIndex][category] += 1;
             }
         }
