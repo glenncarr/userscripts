@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.18
+// @version      1.2.19
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -1150,14 +1150,18 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
             const countTuple =
                 collapsedChildrenCount === null
-                    ? null
+                    ? unknownCountToken
                     : { other: otherCount, patch: patchCount, tkc: tkcCount };
 
             const previousCount = renderedTitleCounts.get(titleLink);
+            if (previousCount === countTuple) {
+                return;
+            }
+
             if (
                 previousCount !== undefined &&
-                previousCount !== null &&
-                countTuple !== null &&
+                previousCount !== unknownCountToken &&
+                countTuple !== unknownCountToken &&
                 previousCount.other === countTuple.other &&
                 previousCount.patch === countTuple.patch &&
                 previousCount.tkc === countTuple.tkc
@@ -1177,7 +1181,10 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             titleLink.textContent = titleText;
 
             // Add count as superscript if needed
-            if (countTuple && (countTuple.other > 0 || countTuple.patch > 0 || countTuple.tkc > 0)) {
+            if (
+                countTuple !== unknownCountToken &&
+                (countTuple.other > 0 || countTuple.patch > 0 || countTuple.tkc > 0)
+            ) {
                 const sup = document.createElement('sup');
                 sup.className = SUPERSCRIPT_COUNT_CLASS;
                 sup.textContent =
