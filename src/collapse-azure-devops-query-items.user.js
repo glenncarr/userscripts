@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.14
+// @version      1.2.15
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -938,13 +938,62 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         return countsByDataIndex;
     }
 
+    function buildDescendantCountsByTypeRenderedFallback(grid) {
+        const gridId = grid.id || '';
+        const topLevelRows = getTopLevelRows(grid);
+        const countsByDataIndex = {};
+
+        topLevelRows.forEach((row) => {
+            const dataIndex = getRowDataIndex(row, gridId);
+            if (dataIndex === null || !isPatchTopLevelRow(row)) {
+                return;
+            }
+
+            countsByDataIndex[dataIndex] = {
+                other: 0,
+                patch: 0,
+                tkc: 0,
+            };
+
+            const descendantRows = row.parentElement
+                ? Array.from(row.parentElement.querySelectorAll('.grid-row[role="row"]'))
+                : [];
+            let foundEnd = false;
+
+            for (const descendantRow of descendantRows) {
+                if (descendantRow === row) {
+                    foundEnd = true;
+                    continue;
+                }
+
+                if (!foundEnd) {
+                    continue;
+                }
+
+                const level = parseInt(
+                    descendantRow.getAttribute('aria-level') || '0',
+                    10,
+                );
+                if (level <= 1) {
+                    break;
+                }
+
+                const rowType = getRowWorkItemType(descendantRow);
+                const category = categorizeDescendantType(rowType || 'other');
+                countsByDataIndex[dataIndex][category] += 1;
+            }
+        });
+
+        return countsByDataIndex;
+    }
+
     function captureDescendantCountsByType(grid) {
         const gridCounts = buildDescendantCountsByType(grid);
         if (Object.keys(gridCounts).length > 0) {
             return gridCounts;
         }
 
-        return null;
+        return buildDescendantCountsByTypeRenderedFallback(grid);
     }
 
     function getGridCountState(grid) {
@@ -1075,11 +1124,12 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
             const previousCount = renderedTitleCounts.get(titleLink);
             if (
-                previousCount &&
-                typeof previousCount === 'object' &&
-                previousCount.other === countTuple?.other &&
-                previousCount.patch === countTuple?.patch &&
-                previousCount.tkc === countTuple?.tkc
+                previousCount !== undefined &&
+                previousCount !== null &&
+                countTuple !== null &&
+                previousCount.other === countTuple.other &&
+                previousCount.patch === countTuple.patch &&
+                previousCount.tkc === countTuple.tkc
             ) {
                 return;
             }
