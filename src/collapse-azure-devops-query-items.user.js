@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.21
+// @version      1.2.22
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -64,13 +64,46 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     font-size: 0.75em !important;
     vertical-align: super !important;
     margin-left: 0.2em !important;
-    color: var(--text-primary-color, currentColor) !important;
+    color: var(--text-primary-color, #f3f2f1) !important;
+    font-weight: 700 !important;
+    background-color: color-mix(
+        in srgb,
+        var(--palette-neutral-100, #ffffff) 92%,
+        transparent
+    ) !important;
+    border: 1px solid
+        color-mix(in srgb, var(--palette-neutral-1000, #161616) 70%, transparent) !important;
+    border-radius: 999px !important;
+    padding: 0 0.24em !important;
+    line-height: 1.15 !important;
     text-shadow:
-        0 1px 1px rgba(0, 0, 0, 0.85),
-        0 -1px 1px rgba(0, 0, 0, 0.85),
-        1px 0 1px rgba(0, 0, 0, 0.85),
-        -1px 0 1px rgba(0, 0, 0, 0.85),
-        0 0 1px rgba(255, 255, 255, 0.85) !important;
+        0 1px 0 rgba(255, 255, 255, 0.98),
+        0 -1px 0 rgba(255, 255, 255, 0.98),
+        1px 0 0 rgba(255, 255, 255, 0.98),
+        -1px 0 0 rgba(255, 255, 255, 0.98),
+        0 0 1px rgba(0, 0, 0, 0.65) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+    ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
+        color: var(--text-primary-color, #f3f2f1) !important;
+        background-color: color-mix(
+            in srgb,
+            var(--palette-neutral-1000, #161616) 88%,
+            transparent
+        ) !important;
+        border-color: color-mix(
+            in srgb,
+            var(--palette-neutral-0, #ffffff) 78%,
+            transparent
+        ) !important;
+        text-shadow:
+            0 1px 0 rgba(0, 0, 0, 0.98),
+            0 -1px 0 rgba(0, 0, 0, 0.98),
+            1px 0 0 rgba(0, 0, 0, 0.98),
+            -1px 0 0 rgba(0, 0, 0, 0.98),
+            0 0 1px rgba(255, 255, 255, 0.6) !important;
+    }
 }
 `;
 
