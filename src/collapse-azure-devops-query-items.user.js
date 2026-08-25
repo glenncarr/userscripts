@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.29
+// @version      1.2.30
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -61,7 +61,7 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         'collapse-azure-devops-query-items-superscript-style';
     const SUPERSCRIPT_STYLE_TEXT = `
 :root {
-    --collapse-azure-devops-query-items-superscript-color: #0a0a0a;
+    --collapse-azure-devops-query-items-superscript-color: #000000;
 }
 
 ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
@@ -80,12 +80,10 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 }
 
 html.ms-vss-web-vsts-theme,
-html[data-theme='ms.vss-web.vsts.theme'],
 html[data-theme='ms.vss-web.vsts-theme'],
 body.ms-vss-web-vsts-theme,
-body[data-theme='ms.vss-web.vsts.theme'],
 body[data-theme='ms.vss-web.vsts-theme'] {
-    --collapse-azure-devops-query-items-superscript-color: #0a0a0a;
+    --collapse-azure-devops-query-items-superscript-color: #000000;
 }
 
 html.ms-vss-web-vsts-theme-dark,
