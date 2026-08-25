@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.27
+// @version      1.2.28
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -61,7 +61,7 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         'collapse-azure-devops-query-items-superscript-style';
     const SUPERSCRIPT_STYLE_TEXT = `
 :root {
-    --collapse-azure-devops-query-items-superscript-color: #111111;
+    --collapse-azure-devops-query-items-superscript-color: #0a0a0a;
 }
 
 ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
