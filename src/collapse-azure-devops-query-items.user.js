@@ -79,10 +79,12 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     }
 }
 
-html.ms-vss-web-vsts-theme-light,
-html[data-theme='ms.vss-web.vsts-theme-light'],
-body.ms-vss-web-vsts-theme-light,
-body[data-theme='ms.vss-web.vsts-theme-light'] {
+html.ms-vss-web-vsts-theme,
+html[data-theme='ms.vss-web.vsts.theme'],
+html[data-theme='ms.vss-web.vsts-theme'],
+body.ms-vss-web-vsts-theme,
+body[data-theme='ms.vss-web.vsts.theme'],
+body[data-theme='ms.vss-web.vsts-theme'] {
     --collapse-azure-devops-query-items-superscript-color: #0a0a0a;
 }
 
