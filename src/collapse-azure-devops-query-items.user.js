@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.31
+// @version      1.2.32
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -104,7 +104,108 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     const gridCountStates = new WeakMap();
     const unknownCountToken = Symbol('unknown-count');
 
-    function getSuperscriptColor() {
+    function parseCssColor(value) {
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        const rgbMatch = value.match(
+            /^rgba?\(\s*([\d.]+)(?:\s*,\s*|\s+)([\d.]+)(?:\s*,\s*|\s+)([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i,
+        );
+        if (rgbMatch) {
+            const alpha = rgbMatch[4] === undefined ? 1 : Number(rgbMatch[4]);
+            return [
+                Number(rgbMatch[1]),
+                Number(rgbMatch[2]),
+                Number(rgbMatch[3]),
+                alpha,
+            ];
+        }
+
+        const hexMatch = value.match(/^#([\da-f]{6})([\da-f]{2})?$/i);
+        if (!hexMatch) {
+            return null;
+        }
+
+        const alpha = hexMatch[2] ? Number.parseInt(hexMatch[2], 16) / 255 : 1;
+        return [
+            Number.parseInt(hexMatch[1].slice(0, 2), 16),
+            Number.parseInt(hexMatch[1].slice(2, 4), 16),
+            Number.parseInt(hexMatch[1].slice(4, 6), 16),
+            alpha,
+        ];
+    }
+
+    function getRenderedBackgroundColor(element) {
+        if (typeof window.getComputedStyle !== 'function') {
+            return null;
+        }
+
+        const backgroundLayers = [];
+        let current = element;
+        while (current) {
+            const backgroundColor = parseCssColor(
+                window.getComputedStyle(current).backgroundColor,
+            );
+            if (backgroundColor) {
+                backgroundLayers.push(backgroundColor);
+            }
+            current = current.parentElement;
+        }
+
+        let composite = null;
+        for (let index = backgroundLayers.length - 1; index >= 0; index -= 1) {
+            const [red, green, blue, alpha] = backgroundLayers[index];
+            if (alpha <= 0) {
+                continue;
+            }
+
+            if (!composite) {
+                composite = [red, green, blue, alpha];
+                continue;
+            }
+
+            const compositeAlpha = alpha + composite[3] * (1 - alpha);
+            composite = [
+                (red * alpha + composite[0] * composite[3] * (1 - alpha)) /
+                    compositeAlpha,
+                (green * alpha + composite[1] * composite[3] * (1 - alpha)) /
+                    compositeAlpha,
+                (blue * alpha + composite[2] * composite[3] * (1 - alpha)) /
+                    compositeAlpha,
+                compositeAlpha,
+            ];
+        }
+
+        return composite && composite[3] > 0.95 ? composite : null;
+    }
+
+    function isLightBackground([red, green, blue]) {
+        const toLinear = (channel) => {
+            const normalized = channel / 255;
+            return normalized <= 0.03928
+                ? normalized / 12.92
+                : ((normalized + 0.055) / 1.055) ** 2.4;
+        };
+
+        return (
+            0.2126 * toLinear(red) +
+                0.7152 * toLinear(green) +
+                0.0722 * toLinear(blue) >
+            0.5
+        );
+    }
+
+    function getSuperscriptColor(grid = null) {
+        const renderedBackground = getRenderedBackgroundColor(
+            grid || document.body || document.documentElement,
+        );
+        if (renderedBackground) {
+            return isLightBackground(renderedBackground)
+                ? '#000000'
+                : '#c0c0c0';
+        }
+
         if (document.querySelector(DARK_AZURE_THEME_SELECTOR)) {
             return '#c0c0c0';
         }
@@ -124,7 +225,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             return;
         }
 
-        const color = getSuperscriptColor();
+        const color = getSuperscriptColor(grid);
         grid.querySelectorAll(`.${SUPERSCRIPT_COUNT_CLASS}`).forEach((sup) => {
             sup.style.setProperty('color', color, 'important');
         });
