@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.30
+// @version      1.2.31
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -59,38 +59,36 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         'collapse-azure-devops-query-items-count-superscript';
     const SUPERSCRIPT_STYLE_ID =
         'collapse-azure-devops-query-items-superscript-style';
+    const LIGHT_AZURE_THEME_SELECTOR = [
+        'html.ms-vss-web-vsts-theme',
+        'html.ms-vss-web-vsts-theme-light',
+        "html[data-theme='ms.vss-web.vsts-theme']",
+        "html[data-theme='ms.vss-web.vsts-theme-light']",
+        'body.ms-vss-web-vsts-theme',
+        'body.ms-vss-web-vsts-theme-light',
+        "body[data-theme='ms.vss-web.vsts-theme']",
+        "body[data-theme='ms.vss-web.vsts-theme-light']",
+    ].join(',');
+    const DARK_AZURE_THEME_SELECTOR = [
+        'html.ms-vss-web-vsts-theme-dark',
+        "html[data-theme='ms.vss-web.vsts-theme-dark']",
+        'body.ms-vss-web-vsts-theme-dark',
+        "body[data-theme='ms.vss-web.vsts-theme-dark']",
+    ].join(',');
     const SUPERSCRIPT_STYLE_TEXT = `
-:root {
-    --collapse-azure-devops-query-items-superscript-color: #000000;
-}
-
 ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     font-size: 0.75em !important;
     vertical-align: super !important;
     margin-left: 0.2em !important;
-    color: var(--collapse-azure-devops-query-items-superscript-color) !important;
+    color: #000000 !important;
     font-weight: 700 !important;
     text-shadow: none !important;
 }
 
 @media (prefers-color-scheme: dark) {
-    :root {
-        --collapse-azure-devops-query-items-superscript-color: #c0c0c0;
+    ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
+        color: #c0c0c0 !important;
     }
-}
-
-html.ms-vss-web-vsts-theme,
-html[data-theme='ms.vss-web.vsts-theme'],
-body.ms-vss-web-vsts-theme,
-body[data-theme='ms.vss-web.vsts-theme'] {
-    --collapse-azure-devops-query-items-superscript-color: #000000;
-}
-
-html.ms-vss-web-vsts-theme-dark,
-html[data-theme='ms.vss-web.vsts-theme-dark'],
-body.ms-vss-web-vsts-theme-dark,
-body[data-theme='ms.vss-web.vsts-theme-dark'] {
-    --collapse-azure-devops-query-items-superscript-color: #c0c0c0;
 }
 `;
 
@@ -105,6 +103,32 @@ body[data-theme='ms.vss-web.vsts-theme-dark'] {
     const renderedTitleCounts = new WeakMap();
     const gridCountStates = new WeakMap();
     const unknownCountToken = Symbol('unknown-count');
+
+    function getSuperscriptColor() {
+        if (document.querySelector(DARK_AZURE_THEME_SELECTOR)) {
+            return '#c0c0c0';
+        }
+
+        if (document.querySelector(LIGHT_AZURE_THEME_SELECTOR)) {
+            return '#000000';
+        }
+
+        return typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? '#c0c0c0'
+            : '#000000';
+    }
+
+    function updateSuperscriptColors(grid) {
+        if (!grid) {
+            return;
+        }
+
+        const color = getSuperscriptColor();
+        grid.querySelectorAll(`.${SUPERSCRIPT_COUNT_CLASS}`).forEach((sup) => {
+            sup.style.setProperty('color', color, 'important');
+        });
+    }
 
     function isQueryRoute() {
         const path = window.location.pathname.toLowerCase();
@@ -1242,6 +1266,8 @@ body[data-theme='ms.vss-web.vsts-theme-dark'] {
 
             renderedTitleCounts.set(titleLink, countTuple);
         });
+
+        updateSuperscriptColors(grid);
     }
 
     function selectFirstTopLevelRow(grid) {
@@ -1457,6 +1483,9 @@ body[data-theme='ms.vss-web.vsts-theme-dark'] {
     const observer = new MutationObserver(() => {
         const grid = findGrid();
 
+        ensureSuperscriptStyles();
+        updateSuperscriptColors(grid);
+
         if (grid !== activeGrid) {
             if (pendingRunQueryRefresh) {
                 clearPendingRenderedHandler();
@@ -1523,6 +1552,7 @@ body[data-theme='ms.vss-web.vsts-theme-dark'] {
                 'aria-level',
                 'aria-rowindex',
                 'class',
+                'data-theme',
                 'data-id',
                 'data-index',
                 'data-row-index',
@@ -1542,6 +1572,20 @@ body[data-theme='ms.vss-web.vsts-theme-dark'] {
             },
             true,
         );
+        if (typeof window.matchMedia === 'function') {
+            const colorScheme = window.matchMedia(
+                '(prefers-color-scheme: dark)',
+            );
+            const updateColorScheme = () => {
+                updateSuperscriptColors(findGrid());
+            };
+
+            if (typeof colorScheme.addEventListener === 'function') {
+                colorScheme.addEventListener('change', updateColorScheme);
+            } else if (typeof colorScheme.addListener === 'function') {
+                colorScheme.addListener(updateColorScheme);
+            }
+        }
         scheduleProcessing(0);
     }
 
