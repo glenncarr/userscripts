@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.34
+// @version      1.2.35
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -1287,6 +1287,14 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         getTopLevelRows(grid).forEach((row) => {
             const titleLink = row.querySelector('a.work-item-title-link');
             if (!titleLink) {
+                return;
+            }
+
+            if (!isPatchTopLevelRow(row)) {
+                titleLink.querySelectorAll(
+                    `.${SUPERSCRIPT_COUNT_CLASS}`,
+                ).forEach((sup) => sup.remove());
+                renderedTitleCounts.delete(titleLink);
                 return;
             }
 
