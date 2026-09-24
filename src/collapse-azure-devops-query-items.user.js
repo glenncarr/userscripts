@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.35
+// @version      1.2.36
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -1028,6 +1028,62 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         return countsByDataIndex;
     }
 
+    function buildParentDataIndexMap(provider, workItemEntries) {
+        const orderedEntries = [...workItemEntries].sort(
+            (left, right) => left.dataIndex - right.dataIndex,
+        );
+        const latestDataIndexById = new Map();
+        const parentDataIndexByDataIndex = new Map();
+
+        orderedEntries.forEach(({ dataIndex, workItemId }) => {
+            const parentWorkItemId = normalizeWorkItemId(
+                getParentWorkItemId(provider, dataIndex, workItemId),
+            );
+            // Rows are flattened in tree order, so a row's owning parent is the
+            // most recent occurrence of that work item before it.
+            const parentDataIndex =
+                parentWorkItemId === null || parentWorkItemId === '0'
+                    ? undefined
+                    : latestDataIndexById.get(parentWorkItemId);
+            parentDataIndexByDataIndex.set(
+                dataIndex,
+                parentDataIndex === undefined ? null : parentDataIndex,
+            );
+
+            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
+            if (normalizedWorkItemId !== null) {
+                latestDataIndexById.set(normalizedWorkItemId, dataIndex);
+            }
+        });
+
+        return parentDataIndexByDataIndex;
+    }
+
+    function findTopLevelAncestorDataIndex(
+        dataIndex,
+        parentDataIndexByDataIndex,
+        topLevelDataIndices,
+    ) {
+        const visitedDataIndices = new Set();
+        let currentDataIndex = parentDataIndexByDataIndex.get(dataIndex);
+
+        while (
+            currentDataIndex !== undefined &&
+            currentDataIndex !== null &&
+            !visitedDataIndices.has(currentDataIndex)
+        ) {
+            if (topLevelDataIndices.has(currentDataIndex)) {
+                return currentDataIndex;
+            }
+
+            visitedDataIndices.add(currentDataIndex);
+            currentDataIndex =
+                parentDataIndexByDataIndex.get(currentDataIndex);
+        }
+
+        return null;
+    }
+
     function categorizeDescendantType(workItemType) {
         if (workItemType === PATCH_WORK_ITEM_TYPE_TEXT) {
             return 'patch';
@@ -1068,32 +1124,26 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         }
 
         const workItemIdByIndex = new Map();
-        const dataIndexByWorkItemId = new Map();
         workItemEntries.forEach(({ dataIndex, workItemId }) => {
-            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
-            if (normalizedWorkItemId === null) {
+            if (normalizeWorkItemId(workItemId) === null) {
                 return;
             }
 
             workItemIdByIndex.set(dataIndex, workItemId);
-            dataIndexByWorkItemId.set(normalizedWorkItemId, dataIndex);
         });
 
-        const topLevelById = new Map();
-        const topLevelIds = new Set();
+        const topLevelDataIndices = new Set();
         let allTopLevelRowsMapped = true;
 
         topLevelRows.forEach((row) => {
             const dataIndex = getRowDataIndex(row, gridId);
             const workItemId = workItemIdByIndex.get(dataIndex);
-            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
-            if (dataIndex === null || normalizedWorkItemId === null) {
+            if (dataIndex === null || normalizeWorkItemId(workItemId) === null) {
                 allTopLevelRowsMapped = false;
                 return;
             }
 
-            topLevelIds.add(normalizedWorkItemId);
-            topLevelById.set(normalizedWorkItemId, dataIndex);
+            topLevelDataIndices.add(dataIndex);
             validatedDataIndices.add(dataIndex);
         });
 
@@ -1101,30 +1151,30 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             return null;
         }
 
+        const parentDataIndexByDataIndex = buildParentDataIndexMap(
+            provider,
+            workItemEntries,
+        );
+
         for (const { dataIndex, workItemId } of workItemEntries) {
+            if (topLevelDataIndices.has(dataIndex)) {
+                continue;
+            }
+
             const workItemType = getGridWorkItemType(provider, workItemId, dataIndex);
             if (workItemType === null) {
                 return null;
             }
 
-            const normalizedWorkItemId = normalizeWorkItemId(workItemId);
-            if (topLevelIds.has(normalizedWorkItemId)) {
-                continue;
-            }
-
-            const topLevelId = findTopLevelAncestorId(
-                provider,
+            const topLevelDataIndex = findTopLevelAncestorDataIndex(
                 dataIndex,
-                workItemId,
-                topLevelById,
-                workItemIdByIndex,
-                dataIndexByWorkItemId,
+                parentDataIndexByDataIndex,
+                topLevelDataIndices,
             );
-            if (topLevelId === null) {
+            if (topLevelDataIndex === null) {
                 continue;
             }
 
-            const topLevelDataIndex = topLevelById.get(topLevelId);
             if (Object.prototype.hasOwnProperty.call(countsByDataIndex, topLevelDataIndex)) {
                 const category = categorizeDescendantType(workItemType);
                 countsByDataIndex[topLevelDataIndex][category] += 1;
