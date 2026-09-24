@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.36
+// @version      1.2.37
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -59,6 +59,12 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         'collapse-azure-devops-query-items-count-superscript';
     const SUPERSCRIPT_STYLE_ID =
         'collapse-azure-devops-query-items-superscript-style';
+    const TITLE_COLUMN_LEGEND_CLASS =
+        'collapse-azure-devops-query-items-title-legend';
+    const TITLE_COLUMN_LEGEND_TEXT = '(<work items>/<core prereq>/<tkc pr>)';
+    const TITLE_COLUMN_HEADER_SELECTOR =
+        '.grid-header-column[role="columnheader"]';
+    const SORT_ORDER_SELECTOR = '.grid-header-sort-order';
     const LIGHT_AZURE_THEME_SELECTOR = [
         'html.ms-vss-web-vsts-theme',
         'html.ms-vss-web-vsts-theme-light',
@@ -726,6 +732,59 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         document.head.appendChild(style);
     }
 
+    function findTitleHeaderColumn(grid) {
+        const headers = grid.querySelectorAll(TITLE_COLUMN_HEADER_SELECTOR);
+
+        for (const header of headers) {
+            const label = getNormalizedTitleText(
+                header.querySelector('.title')?.textContent ||
+                    header.getAttribute('aria-label') ||
+                    '',
+            );
+
+            if (label === 'title') {
+                return header;
+            }
+        }
+
+        return null;
+    }
+
+    function updateTitleColumnLegend(grid) {
+        if (!grid) {
+            return;
+        }
+
+        const header = findTitleHeaderColumn(grid);
+        if (!header) {
+            return;
+        }
+
+        ensureSuperscriptStyles();
+
+        let legend = header.querySelector(`.${TITLE_COLUMN_LEGEND_CLASS}`);
+        if (!legend) {
+            legend = document.createElement('sup');
+            legend.className = `${SUPERSCRIPT_COUNT_CLASS} ${TITLE_COLUMN_LEGEND_CLASS}`;
+            legend.textContent = TITLE_COLUMN_LEGEND_TEXT;
+        }
+
+        const anchor =
+            header.querySelector(SORT_ORDER_SELECTOR) ||
+            header.querySelector('.title');
+
+        if (!anchor) {
+            if (legend.parentElement !== header) {
+                header.appendChild(legend);
+            }
+            return;
+        }
+
+        if (legend.previousElementSibling !== anchor) {
+            anchor.insertAdjacentElement('afterend', legend);
+        }
+    }
+
     function clearPlaceholderStyles(grid) {
         if (!grid) {
             return;
@@ -1330,6 +1389,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         }
 
         ensureSuperscriptStyles();
+        updateTitleColumnLegend(grid);
 
         const expandStates = findExpandStates(grid);
         const gridId = grid.id || '';
@@ -1642,6 +1702,7 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         const grid = findGrid();
 
         ensureSuperscriptStyles();
+        updateTitleColumnLegend(grid);
         updateSuperscriptColors(grid);
 
         if (grid !== activeGrid) {
