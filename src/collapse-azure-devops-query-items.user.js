@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Collapse Azure DevOps query items
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.2.37
+// @version      1.2.39
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/collapse-azure-devops-query-items.user.js
 // @description  Collapse expanded top-level work items and style placeholder Patch items in Azure DevOps query results.
 // @match        http://tfs/*/_queries/*
@@ -61,10 +61,13 @@ ${GRID_SELECTOR} .${PLACEHOLDER_PRESENTATION_CLASS} * {
         'collapse-azure-devops-query-items-superscript-style';
     const TITLE_COLUMN_LEGEND_CLASS =
         'collapse-azure-devops-query-items-title-legend';
-    const TITLE_COLUMN_LEGEND_TEXT = '(<work items>/<core prereq>/<tkc pr>)';
+    const TITLE_COLUMN_LEGEND_TEXT = '(<related>/<predecessors>/<successors>)';
+    const DEPENDENCY_FORWARD_END_NAME = 'system.linktypes.dependency-forward';
+    const DEPENDENCY_REVERSE_END_NAME = 'system.linktypes.dependency-reverse';
+    const RELATED_LINK_TYPE_NAME = 'system.linktypes.related';
     const TITLE_COLUMN_HEADER_SELECTOR =
         '.grid-header-column[role="columnheader"]';
-    const SORT_ORDER_SELECTOR = '.grid-header-sort-order';
+    const TITLE_COLUMN_TEXT_SELECTOR = '.title';
     const LIGHT_AZURE_THEME_SELECTOR = [
         'html.ms-vss-web-vsts-theme',
         'html.ms-vss-web-vsts-theme-light',
@@ -94,6 +97,10 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
     ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         color: #c0c0c0 !important;
     }
+}
+
+${GRID_SELECTOR} .${TITLE_COLUMN_LEGEND_CLASS} {
+    white-space: nowrap !important;
 }
 `;
 
@@ -736,8 +743,14 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         const headers = grid.querySelectorAll(TITLE_COLUMN_HEADER_SELECTOR);
 
         for (const header of headers) {
+            if (header.querySelector(`.${TITLE_COLUMN_LEGEND_CLASS}`)) {
+                return header;
+            }
+
+            const titleText = header.querySelector(TITLE_COLUMN_TEXT_SELECTOR);
             const label = getNormalizedTitleText(
-                header.querySelector('.title')?.textContent ||
+                titleText?.getAttribute('title') ||
+                    titleText?.textContent ||
                     header.getAttribute('aria-label') ||
                     '',
             );
@@ -762,6 +775,11 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
 
         ensureSuperscriptStyles();
 
+        // The header title box is laid out independently of its siblings, so the
+        // legend has to live inside it to share the same line.
+        const container =
+            header.querySelector(TITLE_COLUMN_TEXT_SELECTOR) || header;
+
         let legend = header.querySelector(`.${TITLE_COLUMN_LEGEND_CLASS}`);
         if (!legend) {
             legend = document.createElement('sup');
@@ -769,19 +787,8 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             legend.textContent = TITLE_COLUMN_LEGEND_TEXT;
         }
 
-        const anchor =
-            header.querySelector(SORT_ORDER_SELECTOR) ||
-            header.querySelector('.title');
-
-        if (!anchor) {
-            if (legend.parentElement !== header) {
-                header.appendChild(legend);
-            }
-            return;
-        }
-
-        if (legend.previousElementSibling !== anchor) {
-            anchor.insertAdjacentElement('afterend', legend);
+        if (legend.parentElement !== container || legend.nextSibling !== null) {
+            container.appendChild(legend);
         }
     }
 
@@ -1143,14 +1150,52 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
         return null;
     }
 
-    function categorizeDescendantType(workItemType) {
-        if (workItemType === PATCH_WORK_ITEM_TYPE_TEXT) {
-            return 'patch';
+    function getLinkTypeEndsById(provider) {
+        const linkTypeEnds = provider?._store?.linkTypeEnds;
+        if (!linkTypeEnds || typeof linkTypeEnds !== 'object') {
+            return null;
         }
-        if (workItemType === 'tkc product release') {
-            return 'tkc';
+
+        // The store indexes ends by both id and name, so key off the end objects.
+        const values = Array.isArray(linkTypeEnds)
+            ? linkTypeEnds
+            : Object.values(linkTypeEnds);
+        const endsById = new Map();
+
+        values.forEach((end) => {
+            if (end && typeof end === 'object' && Number.isFinite(end.id)) {
+                endsById.set(end.id, end);
+            }
+        });
+
+        return endsById.size > 0 ? endsById : null;
+    }
+
+    function categorizeLinkTypeEnd(end) {
+        const immutableName = getNormalizedTitleText(end?.immutableName || '');
+        if (immutableName) {
+            if (immutableName === DEPENDENCY_FORWARD_END_NAME) {
+                return 'successor';
+            }
+            if (immutableName === DEPENDENCY_REVERSE_END_NAME) {
+                return 'predecessor';
+            }
+            if (immutableName.startsWith(RELATED_LINK_TYPE_NAME)) {
+                return 'related';
+            }
+            return null;
         }
-        return 'other';
+
+        const name = getNormalizedTitleText(end?.name || '');
+        if (
+            name === 'successor' ||
+            name === 'predecessor' ||
+            name === 'related'
+        ) {
+            return name;
+        }
+
+        return null;
     }
 
     function buildDescendantCountsByType(grid) {
@@ -1166,14 +1211,19 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             }
 
             countsByDataIndex[dataIndex] = {
-                other: 0,
-                patch: 0,
-                tkc: 0,
+                related: 0,
+                predecessor: 0,
+                successor: 0,
             };
         });
 
         const provider = findGridDataProvider(grid);
-        if (!provider) {
+        if (!provider || !provider._links) {
+            return null;
+        }
+
+        const linkTypeEndsById = getLinkTypeEndsById(provider);
+        if (!linkTypeEndsById) {
             return null;
         }
 
@@ -1215,14 +1265,17 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             workItemEntries,
         );
 
-        for (const { dataIndex, workItemId } of workItemEntries) {
+        for (const { dataIndex } of workItemEntries) {
             if (topLevelDataIndices.has(dataIndex)) {
                 continue;
             }
 
-            const workItemType = getGridWorkItemType(provider, workItemId, dataIndex);
-            if (workItemType === null) {
-                return null;
+            const linkTypeEndId = getCollectionValue(provider._links, dataIndex);
+            const category = categorizeLinkTypeEnd(
+                linkTypeEndsById.get(linkTypeEndId),
+            );
+            if (category === null) {
+                continue;
             }
 
             const topLevelDataIndex = findTopLevelAncestorDataIndex(
@@ -1235,7 +1288,6 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             }
 
             if (Object.prototype.hasOwnProperty.call(countsByDataIndex, topLevelDataIndex)) {
-                const category = categorizeDescendantType(workItemType);
                 countsByDataIndex[topLevelDataIndex][category] += 1;
             }
         }
@@ -1245,62 +1297,8 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             : null;
     }
 
-    function buildDescendantCountsByTypeRenderedFallback(grid) {
-        const gridId = grid.id || '';
-        const topLevelRows = getTopLevelRows(grid);
-        const countsByDataIndex = {};
-
-        topLevelRows.forEach((row) => {
-            const dataIndex = getRowDataIndex(row, gridId);
-            if (dataIndex === null) {
-                return;
-            }
-
-            countsByDataIndex[dataIndex] = {
-                other: 0,
-                patch: 0,
-                tkc: 0,
-            };
-
-            const descendantRows = row.parentElement
-                ? Array.from(row.parentElement.querySelectorAll('.grid-row[role="row"]'))
-                : [];
-            let foundEnd = false;
-
-            for (const descendantRow of descendantRows) {
-                if (descendantRow === row) {
-                    foundEnd = true;
-                    continue;
-                }
-
-                if (!foundEnd) {
-                    continue;
-                }
-
-                const level = parseInt(
-                    descendantRow.getAttribute('aria-level') || '0',
-                    10,
-                );
-                if (level <= 1) {
-                    break;
-                }
-
-                const rowType = getRowWorkItemType(descendantRow);
-                const category = categorizeDescendantType(rowType || 'other');
-                countsByDataIndex[dataIndex][category] += 1;
-            }
-        });
-
-        return countsByDataIndex;
-    }
-
     function captureDescendantCountsByType(grid) {
-        const gridCounts = buildDescendantCountsByType(grid);
-        if (gridCounts !== null) {
-            return gridCounts;
-        }
-
-        return buildDescendantCountsByTypeRenderedFallback(grid);
+        return buildDescendantCountsByType(grid);
     }
 
     function getGridCountState(grid) {
@@ -1415,9 +1413,9 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
                 state.renderedFallbackCounts,
             );
             const dataIndex = getRowDataIndex(row, gridId);
-            let otherCount = 0;
-            let patchCount = 0;
-            let tkcCount = 0;
+            let relatedCount = 0;
+            let predecessorCount = 0;
+            let successorCount = 0;
 
             if (
                 dataIndex !== null &&
@@ -1427,15 +1425,19 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
                 )
             ) {
                 const counts = state.descendantCountsByType[dataIndex];
-                otherCount = counts.other || 0;
-                patchCount = counts.patch || 0;
-                tkcCount = counts.tkc || 0;
+                relatedCount = counts.related || 0;
+                predecessorCount = counts.predecessor || 0;
+                successorCount = counts.successor || 0;
             }
 
             const countTuple =
                 collapsedChildrenCount === null
                     ? unknownCountToken
-                    : { other: otherCount, patch: patchCount, tkc: tkcCount };
+                    : {
+                          related: relatedCount,
+                          predecessor: predecessorCount,
+                          successor: successorCount,
+                      };
 
             const previousCount = renderedTitleCounts.get(titleLink);
             if (previousCount === countTuple) {
@@ -1446,9 +1448,9 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
                 previousCount !== undefined &&
                 previousCount !== unknownCountToken &&
                 countTuple !== unknownCountToken &&
-                previousCount.other === countTuple.other &&
-                previousCount.patch === countTuple.patch &&
-                previousCount.tkc === countTuple.tkc
+                previousCount.related === countTuple.related &&
+                previousCount.predecessor === countTuple.predecessor &&
+                previousCount.successor === countTuple.successor
             ) {
                 return;
             }
@@ -1467,17 +1469,19 @@ ${GRID_SELECTOR} .${SUPERSCRIPT_COUNT_CLASS} {
             // Add count as superscript if needed
             if (
                 countTuple !== unknownCountToken &&
-                (countTuple.other > 0 || countTuple.patch > 0 || countTuple.tkc > 0)
+                (countTuple.related > 0 ||
+                    countTuple.predecessor > 0 ||
+                    countTuple.successor > 0)
             ) {
                 const sup = document.createElement('sup');
                 sup.className = SUPERSCRIPT_COUNT_CLASS;
                 sup.textContent =
                     '(' +
-                    String(countTuple.other) +
+                    String(countTuple.related) +
                     '/' +
-                    String(countTuple.patch) +
+                    String(countTuple.predecessor) +
                     '/' +
-                    String(countTuple.tkc) +
+                    String(countTuple.successor) +
                     ')';
                 titleLink.appendChild(sup);
             }
