@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Copy Azure DevOps work item link
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.6.0
+// @version      1.7.2
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/copy-azure-devops-work-item-link.user.js
-// @description  Adds a copy button beside the row context menu ("...") that copies "<id>: <title>" with the id hyperlinked; Ctrl+click copies the item and its related items as an HTML table.
+// @description  Adds a copy button beside the row context menu ("...") that copies "<id>: <title>" with the id hyperlinked; Ctrl+click copies the item and its related items as an HTML table; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -43,6 +43,10 @@
     const LINK_COLOR = '#106ebe';
     const PATCH_WORK_ITEM_TYPE = 'patch';
     const WORK_ITEM_TYPE_CELL_INDEX = 3;
+    const STRIPPED_PREFIX_TEXT_PATTERN =
+        /(^|\n)\s*(?:Product Backlog Item|Carrier Data Release|Request|Bug)\s+(?=\d+)/g;
+    const STRIPPED_PREFIX_HTML_PATTERN =
+        /(>)\s*(?:Product Backlog Item|Carrier Data Release|Request|Bug)\s+(\d+)/g;
     const RELATED_LINK_TYPES = new Set(['System.LinkTypes.Related']);
     const EXPAND_POLL_INTERVAL = 60;
     const EXPAND_TIMEOUT = 2000;
@@ -489,6 +493,51 @@
         return `<table><tbody>${rows}</tbody></table>`;
     }
 
+    let scriptOwnedCopy = false;
+
+    function stripPrefixFromText(text) {
+        return String(text).replace(STRIPPED_PREFIX_TEXT_PATTERN, '$1');
+    }
+
+    function stripPrefixFromHtml(html) {
+        return String(html).replace(STRIPPED_PREFIX_HTML_PATTERN, '$1$2');
+    }
+
+    function getSelectionHtml(selection) {
+        const container = document.createElement('div');
+        for (let index = 0; index < selection.rangeCount; index += 1) {
+            container.appendChild(
+                selection.getRangeAt(index).cloneContents(),
+            );
+        }
+
+        return container.innerHTML;
+    }
+
+    function stripWorkItemTypePrefix(event) {
+        if (scriptOwnedCopy || !event.clipboardData) {
+            return;
+        }
+
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) {
+            return;
+        }
+
+        const plainText = selection.toString();
+        const strippedText = stripPrefixFromText(plainText);
+        if (strippedText === plainText) {
+            return;
+        }
+
+        event.clipboardData.setData('text/plain', strippedText);
+        event.clipboardData.setData(
+            'text/html',
+            stripPrefixFromHtml(getSelectionHtml(selection)),
+        );
+        event.preventDefault();
+    }
+
     function copyWithExecCommand(plainText, htmlText) {
         const onCopy = (event) => {
             event.clipboardData.setData('text/plain', plainText);
@@ -496,6 +545,7 @@
             event.preventDefault();
         };
 
+        scriptOwnedCopy = true;
         document.addEventListener('copy', onCopy, true);
         try {
             // A non-empty selection is required for execCommand('copy').
@@ -516,6 +566,7 @@
             holder.remove();
             return copied;
         } finally {
+            scriptOwnedCopy = false;
             document.removeEventListener('copy', onCopy, true);
         }
     }
@@ -748,4 +799,5 @@
             updateCopyButton();
         }
     });
+    document.addEventListener('copy', stripWorkItemTypePrefix, true);
 })();
