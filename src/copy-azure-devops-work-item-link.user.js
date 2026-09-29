@@ -18,6 +18,46 @@
 // ==/UserScript==
 // Installation: import this file into Greasemonkey or Tampermonkey. Duplicate
 // the @match lines if the server is accessed through another hostname.
+//
+// Features
+// --------
+// 1. Copy button in query results
+//    A small copy button is placed immediately to the left of the row context
+//    menu ("..."). It follows the hovered row and lives inside that row so the
+//    grid's own hover highlight keeps working, and it is absolutely positioned
+//    so the grid layout is untouched.
+//
+//    - Click: copies the row as "<id>: <title>" (text/plain) and as
+//      "<a href="...">id</a>: title" (text/html). Patch work items are copied
+//      as "Patch <id>" so the link text reads "Patch 16828".
+//    - Ctrl+click: copies the row plus every work item joined to it by a
+//      "Related" link as an HTML table, one row per work item:
+//        <tr><td><a href="...">16785</a>: </td><td>Title<br/></td></tr>
+//      Predecessor, successor and child links are deliberately excluded.
+//
+//    Related items are read from the work item REST API
+//    ({collection}/{project}/_apis/wit/workitems/{id}?$expand=relations) because
+//    the query grid only renders children once a row is expanded. If that call
+//    fails, the script falls back to expanding the row in the grid, reading the
+//    rendered descendants, and collapsing it back again.
+//
+// 2. "Copy work item title" (Shift+Alt+C) clean-up
+//    Azure DevOps copies work item titles as "<type> <id>: <title>". A capturing
+//    copy listener rewrites the clipboard so the type prefix is removed for
+//    Product Backlog Item, Carrier Data Release, Request and Bug work items
+//    (see STRIPPED_PREFIX_TEXT_PATTERN). Other types, such as Patch, are left
+//    alone, and copies performed by this script itself are not rewritten.
+//
+// Maintenance notes
+// -----------------
+// - Grid rows are absolutely positioned and recycled, so rows are always read
+//   from a list sorted by aria-rowindex, and row elements are re-resolved by
+//   work item id between expand/collapse passes.
+// - Clipboard writes prefer navigator.clipboard.write (so both text/plain and
+//   text/html flavours are set) and fall back to document.execCommand('copy')
+//   with a temporary selection when the async API is unavailable or rejected.
+// - If the "..." button uses a different class in another Azure DevOps version,
+//   add its selector to CONTEXT_MENU_SELECTORS.
 
 (function () {
     'use strict';
