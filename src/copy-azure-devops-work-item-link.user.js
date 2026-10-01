@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Copy Azure DevOps work item link
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.7.4
+// @version      1.7.10
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/copy-azure-devops-work-item-link.user.js
-// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as an HTML table; Ctrl+click copies "<id>: <title>" with the id hyperlinked; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
+// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as an HTML table; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -33,10 +33,6 @@
 //      Predecessor, successor and child links are deliberately excluded.
 //      Related items are ordered by Work Item Type, Commitment, Priority,
 //      State (descending), Title, and ID (descending).
-//    - Ctrl+click: copies the row as "<id>: <title>" (text/plain) and as
-//      "<a href="...">id</a>: title" (text/html). Patch work items are copied
-//      as "Patch <id>" so the link text reads "Patch 16828".
-//
 //    Related items are read from the work item REST API
 //    ({collection}/{project}/_apis/wit/workitems/{id}?$expand=relations) because
 //    the query grid only renders children once a row is expanded. If that call
@@ -132,6 +128,32 @@
 
 .${COPY_BUTTON_CLASS}.is-copied {
     color: #107c10;
+}
+
+.${COPY_BUTTON_CLASS}-tooltip {
+    position: fixed;
+    z-index: 10000;
+    display: none;
+    max-width: 280px;
+    padding: 6px 8px;
+    border: 1px solid #c8c8c8;
+    background: #f5f5f5;
+    color: #1e1e1e;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: pre-line;
+    pointer-events: none;
+}
+
+.${COPY_BUTTON_CLASS}-tooltip.is-visible {
+    display: block;
+}
+
+.${COPY_BUTTON_CLASS}-tooltip.is-copy-summary {
+    width: max-content;
+    max-width: none;
+    white-space: pre;
 }
 `;
 
@@ -731,25 +753,77 @@
         return copyWithExecCommand(plainText, htmlText);
     }
 
-    function flashCopied(button) {
-        button.classList.add('is-copied');
-        window.setTimeout(() => button.classList.remove('is-copied'), 1000);
+    let copyTooltip = null;
+    let copyTooltipTimeout = null;
+    let copyTooltipMouseMoveListener = null;
+
+    function getCopyTooltip() {
+        if (copyTooltip) {
+            return copyTooltip;
+        }
+
+        copyTooltip = document.createElement('div');
+        copyTooltip.className = `${COPY_BUTTON_CLASS}-tooltip`;
+        copyTooltip.setAttribute('role', 'tooltip');
+        document.body.appendChild(copyTooltip);
+        return copyTooltip;
     }
 
-    async function copyWorkItemLink(row, button) {
-        const entry = getRowEntry(row);
-        if (!entry) {
-            return;
+    function hideCopyTooltip() {
+        if (copyTooltipTimeout) {
+            window.clearTimeout(copyTooltipTimeout);
+            copyTooltipTimeout = null;
         }
 
-        const plainText = `${getEntryLabel(entry)}: ${entry.title}`;
-        const htmlText = `<a href="${escapeHtml(entry.url)}">${escapeHtml(
-            getEntryLabel(entry),
-        )}</a>: ${escapeHtml(entry.title)}`;
-
-        if (await writeClipboard(plainText, htmlText)) {
-            flashCopied(button);
+        if (copyTooltipMouseMoveListener) {
+            document.removeEventListener(
+                'mousemove',
+                copyTooltipMouseMoveListener,
+            );
+            copyTooltipMouseMoveListener = null;
         }
+
+        if (copyTooltip) {
+            copyTooltip.classList.remove('is-visible');
+        }
+    }
+
+    function showCopyTooltip(button, text, duration = 0, noWrap = false) {
+        hideCopyTooltip();
+        const tooltip = getCopyTooltip();
+        const rect = button.getBoundingClientRect();
+        tooltip.textContent = text;
+        tooltip.classList.toggle('is-copy-summary', noWrap);
+        tooltip.classList.add('is-visible');
+        tooltip.style.left = `${Math.max(
+            4,
+            Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 4),
+        )}px`;
+        tooltip.style.top = `${Math.min(
+            rect.bottom + 4,
+            window.innerHeight - tooltip.offsetHeight - 4,
+        )}px`;
+
+        if (duration > 0) {
+            copyTooltipTimeout = window.setTimeout(hideCopyTooltip, duration);
+        }
+    }
+
+    function flashCopied(button, entries) {
+        button.classList.add('is-copied');
+        window.setTimeout(() => button.classList.remove('is-copied'), 1000);
+        showCopyTooltip(
+            button,
+            `Copied!\n${entries
+                .map((entry) => `${getEntryLabel(entry)}: ${entry.title}`)
+                .join('\n')}`,
+            0,
+            true,
+        );
+        copyTooltipMouseMoveListener = hideCopyTooltip;
+        document.addEventListener('mousemove', copyTooltipMouseMoveListener, {
+            once: true,
+        });
     }
 
     async function copyWorkItemTree(row, button) {
@@ -778,7 +852,7 @@
             .join('\n');
 
         if (await writeClipboard(plainText, buildTableHtml(entries))) {
-            flashCopied(button);
+            flashCopied(button, entries);
         }
     }
 
@@ -808,9 +882,10 @@
         copyButton = document.createElement('button');
         copyButton.type = 'button';
         copyButton.className = COPY_BUTTON_CLASS;
-        copyButton.title =
-            'Copy related work items as a table (Ctrl+click: copy work item link)';
-        copyButton.setAttribute('aria-label', 'Copy work item link');
+        copyButton.setAttribute(
+            'aria-label',
+            'Copy Patch and related work items as a table',
+        );
         copyButton.textContent = '\u29C9';
         copyButton.addEventListener('mousedown', (event) => {
             event.preventDefault();
@@ -823,12 +898,22 @@
                 return;
             }
 
-            if (event.ctrlKey) {
-                copyWorkItemLink(currentRow, copyButton);
-            } else {
-                copyWorkItemTree(currentRow, copyButton);
-            }
+            copyWorkItemTree(currentRow, copyButton);
         });
+        copyButton.addEventListener('mouseenter', () => {
+            showCopyTooltip(
+                copyButton,
+                'Copy Patch and related work items as a table',
+            );
+        });
+        copyButton.addEventListener('mouseleave', hideCopyTooltip);
+        copyButton.addEventListener('focus', () => {
+            showCopyTooltip(
+                copyButton,
+                'Copy Patch and related work items as a table',
+            );
+        });
+        copyButton.addEventListener('blur', hideCopyTooltip);
 
         return copyButton;
     }
