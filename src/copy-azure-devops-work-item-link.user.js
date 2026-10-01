@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Copy Azure DevOps work item link
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.7.2
+// @version      1.7.4
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/copy-azure-devops-work-item-link.user.js
-// @description  Adds a copy button beside the row context menu ("...") that copies "<id>: <title>" with the id hyperlinked; Ctrl+click copies the item and its related items as an HTML table; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
+// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as an HTML table; Ctrl+click copies "<id>: <title>" with the id hyperlinked; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -27,13 +27,15 @@
 //    grid's own hover highlight keeps working, and it is absolutely positioned
 //    so the grid layout is untouched.
 //
-//    - Click: copies the row as "<id>: <title>" (text/plain) and as
-//      "<a href="...">id</a>: title" (text/html). Patch work items are copied
-//      as "Patch <id>" so the link text reads "Patch 16828".
-//    - Ctrl+click: copies the row plus every work item joined to it by a
+//    - Click: copies the row plus every work item joined to it by a
 //      "Related" link as an HTML table, one row per work item:
 //        <tr><td><a href="...">16785</a>: </td><td>Title<br/></td></tr>
 //      Predecessor, successor and child links are deliberately excluded.
+//      Related items are ordered by Work Item Type, Commitment, Priority,
+//      State (descending), Title, and ID (descending).
+//    - Ctrl+click: copies the row as "<id>: <title>" (text/plain) and as
+//      "<a href="...">id</a>: title" (text/html). Patch work items are copied
+//      as "Patch <id>" so the link text reads "Patch 16828".
 //
 //    Related items are read from the work item REST API
 //    ({collection}/{project}/_apis/wit/workitems/{id}?$expand=relations) because
@@ -88,6 +90,16 @@
     const STRIPPED_PREFIX_HTML_PATTERN =
         /(>)\s*(?:Product Backlog Item|Carrier Data Release|Request|Bug)\s+(\d+)/g;
     const RELATED_LINK_TYPES = new Set(['System.LinkTypes.Related']);
+    const RELATED_ITEM_FIELD_REFERENCES = [
+        'System.Title',
+        'System.WorkItemType',
+        'Microsoft.VSTS.Common.Priority',
+        'System.State',
+    ];
+    const SORT_COLLATOR = new Intl.Collator(undefined, {
+        numeric: true,
+        sensitivity: 'base',
+    });
     const EXPAND_POLL_INTERVAL = 60;
     const EXPAND_TIMEOUT = 2000;
     const MAX_EXPAND_PASSES = 50;
@@ -208,15 +220,45 @@
         return ids;
     }
 
+    const commitmentFieldReferences = new Map();
+
+    async function fetchCommitmentFieldReference(baseUrl) {
+        if (commitmentFieldReferences.has(baseUrl)) {
+            return commitmentFieldReferences.get(baseUrl);
+        }
+
+        const promise = fetchJson(
+            `${baseUrl}/_apis/wit/fields?api-version=1.0`,
+        )
+            .then((data) => {
+                const field = (Array.isArray(data?.value) ? data.value : []).find(
+                    (candidate) =>
+                        String(candidate?.name || '').toLowerCase() ===
+                        'commitment',
+                );
+                return field?.referenceName || null;
+            })
+            .catch(() => null);
+        commitmentFieldReferences.set(baseUrl, promise);
+        return promise;
+    }
+
     async function fetchWorkItemFields(baseUrl, ids) {
         if (ids.length === 0) {
             return new Map();
         }
 
+        const commitmentFieldReference = await fetchCommitmentFieldReference(
+            baseUrl,
+        );
+        const fieldReferences = [...RELATED_ITEM_FIELD_REFERENCES];
+        if (commitmentFieldReference) {
+            fieldReferences.push(commitmentFieldReference);
+        }
         const data = await fetchJson(
             `${baseUrl}/_apis/wit/workitems?ids=${ids.join(
                 ',',
-            )}&fields=System.Title,System.WorkItemType&api-version=1.0`,
+            )}&fields=${fieldReferences.join(',')}&api-version=1.0`,
         );
         const fieldsById = new Map();
 
@@ -226,10 +268,60 @@
                 workItemType: String(
                     workItem?.fields?.['System.WorkItemType'] ?? '',
                 ),
+                commitment: String(
+                    workItem?.fields?.[commitmentFieldReference] ?? '',
+                ),
+                priority: String(
+                    workItem?.fields?.['Microsoft.VSTS.Common.Priority'] ?? '',
+                ),
+                state: String(workItem?.fields?.['System.State'] ?? ''),
             });
         });
 
         return fieldsById;
+    }
+
+    function compareSortValues(left, right, descending = false) {
+        const leftValue = String(left || '').trim();
+        const rightValue = String(right || '').trim();
+        if (leftValue === rightValue) {
+            return 0;
+        }
+
+        if (!leftValue) {
+            return 1;
+        }
+
+        if (!rightValue) {
+            return -1;
+        }
+
+        const comparison = SORT_COLLATOR.compare(leftValue, rightValue);
+        return descending ? -comparison : comparison;
+    }
+
+    function compareRelatedWorkItems(left, right) {
+        const comparisons = [
+            [left.workItemType, right.workItemType, false],
+            [left.commitment, right.commitment, false],
+            [left.priority, right.priority, false],
+            [left.state, right.state, true],
+            [left.title, right.title, false],
+            [left.id, right.id, true],
+        ];
+
+        for (const [leftValue, rightValue, descending] of comparisons) {
+            const comparison = compareSortValues(
+                leftValue,
+                rightValue,
+                descending,
+            );
+            if (comparison !== 0) {
+                return comparison;
+            }
+        }
+
+        return 0;
     }
 
     async function fetchWorkItemTreeEntries(rootEntry) {
@@ -243,15 +335,21 @@
 
         return [
             rootEntry,
-            ...relatedIds.map((id) => {
-                const fields = fieldsById.get(id);
-                return {
-                    id,
-                    url: `${baseUrl}/_workitems/edit/${id}`,
-                    title: fields?.title || '',
-                    isPatch: isPatchType(fields?.workItemType),
-                };
-            }),
+            ...relatedIds
+                .map((id) => {
+                    const fields = fieldsById.get(id);
+                    return {
+                        id,
+                        url: `${baseUrl}/_workitems/edit/${id}`,
+                        title: fields?.title || '',
+                        isPatch: isPatchType(fields?.workItemType),
+                        workItemType: fields?.workItemType || '',
+                        commitment: fields?.commitment || '',
+                        priority: fields?.priority || '',
+                        state: fields?.state || '',
+                    };
+                })
+                .sort(compareRelatedWorkItems),
         ];
     }
 
@@ -711,7 +809,7 @@
         copyButton.type = 'button';
         copyButton.className = COPY_BUTTON_CLASS;
         copyButton.title =
-            'Copy work item link (Ctrl+click: copy with related items as a table)';
+            'Copy related work items as a table (Ctrl+click: copy work item link)';
         copyButton.setAttribute('aria-label', 'Copy work item link');
         copyButton.textContent = '\u29C9';
         copyButton.addEventListener('mousedown', (event) => {
@@ -726,9 +824,9 @@
             }
 
             if (event.ctrlKey) {
-                copyWorkItemTree(currentRow, copyButton);
-            } else {
                 copyWorkItemLink(currentRow, copyButton);
+            } else {
+                copyWorkItemTree(currentRow, copyButton);
             }
         });
 
@@ -788,7 +886,12 @@
         const row =
             anchor?.row || anchor?.menu.closest(ROW_SELECTOR) || null;
 
-        if (!anchor || !row || !getTitleLink(row)) {
+        if (
+            !anchor ||
+            !row ||
+            !getTitleLink(row) ||
+            !isPatchType(getRowWorkItemType(row))
+        ) {
             currentRow = null;
             button.classList.remove('is-visible');
             return;
