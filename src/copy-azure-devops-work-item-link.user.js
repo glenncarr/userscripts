@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Copy Azure DevOps work item link
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.7.10
+// @version      1.7.12
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/copy-azure-devops-work-item-link.user.js
-// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as an HTML table; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
+// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as linked HTML lines; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -28,8 +28,8 @@
 //    so the grid layout is untouched.
 //
 //    - Click: copies the row plus every work item joined to it by a
-//      "Related" link as an HTML table, one row per work item:
-//        <tr><td><a href="...">16785</a>: </td><td>Title<br/></td></tr>
+//      "Related" link as an HTML line, one line per work item:
+//        <a href="...">16785</a>: Title<br/>
 //      Predecessor, successor and child links are deliberately excluded.
 //      Related items are ordered by Work Item Type, Commitment, Priority,
 //      State (descending), Title, and ID (descending).
@@ -51,9 +51,8 @@
 // - Grid rows are absolutely positioned and recycled, so rows are always read
 //   from a list sorted by aria-rowindex, and row elements are re-resolved by
 //   work item id between expand/collapse passes.
-// - Clipboard writes prefer navigator.clipboard.write (so both text/plain and
-//   text/html flavours are set) and fall back to document.execCommand('copy')
-//   with a temporary selection when the async API is unavailable or rejected.
+// - Clipboard writes prefer navigator.clipboard.write with an HTML flavour and
+//   fall back to document.execCommand('copy') with a temporary selection.
 // - If the "..." button uses a different class in another Azure DevOps version,
 //   add its selector to CONTEXT_MENU_SELECTORS.
 
@@ -78,7 +77,6 @@
     const TREE_ICON_SELECTOR = '.grid-tree-icon';
     const COLLAPSED_ICON_CLASS = 'bowtie-chevron-right';
     const EXPANDED_ICON_CLASS = 'bowtie-chevron-down';
-    const LINK_COLOR = '#106ebe';
     const PATCH_WORK_ITEM_TYPE = 'patch';
     const WORK_ITEM_TYPE_CELL_INDEX = 3;
     const STRIPPED_PREFIX_TEXT_PATTERN =
@@ -638,19 +636,17 @@
         };
     }
 
-    function buildTableHtml(entries) {
-        const rows = entries
+    function buildLinesHtml(entries) {
+        return entries
             .map(
                 (entry) =>
-                    `<tr><td><a href="${escapeHtml(
+                    `<a href="${escapeHtml(
                         entry.url,
-                    )}" style="color:${LINK_COLOR}" target="_blank">${escapeHtml(
+                    )}" target="_blank">${escapeHtml(
                         getEntryLabel(entry),
-                    )}</a>: </td><td>${escapeHtml(entry.title)}<br/></td></tr>`,
+                    )}</a>: ${escapeHtml(entry.title)}<br/>`,
             )
             .join('');
-
-        return `<table><tbody>${rows}</tbody></table>`;
     }
 
     let scriptOwnedCopy = false;
@@ -698,19 +694,20 @@
         event.preventDefault();
     }
 
-    function copyWithExecCommand(plainText, htmlText) {
+    function copyWithExecCommand(htmlText) {
         const onCopy = (event) => {
-            event.clipboardData.setData('text/plain', plainText);
             event.clipboardData.setData('text/html', htmlText);
             event.preventDefault();
+            // Keep Azure DevOps copy handlers from replacing the HTML flavour.
+            event.stopImmediatePropagation();
         };
 
         scriptOwnedCopy = true;
-        document.addEventListener('copy', onCopy, true);
+        window.addEventListener('copy', onCopy, true);
         try {
             // A non-empty selection is required for execCommand('copy').
             const holder = document.createElement('span');
-            holder.textContent = plainText;
+            holder.innerHTML = htmlText;
             holder.style.position = 'fixed';
             holder.style.opacity = '0';
             document.body.appendChild(holder);
@@ -727,18 +724,15 @@
             return copied;
         } finally {
             scriptOwnedCopy = false;
-            document.removeEventListener('copy', onCopy, true);
+            window.removeEventListener('copy', onCopy, true);
         }
     }
 
-    async function writeClipboard(plainText, htmlText) {
+    async function writeClipboard(htmlText) {
         if (navigator.clipboard && typeof window.ClipboardItem === 'function') {
             try {
                 await navigator.clipboard.write([
                     new window.ClipboardItem({
-                        'text/plain': new Blob([plainText], {
-                            type: 'text/plain',
-                        }),
                         'text/html': new Blob([htmlText], {
                             type: 'text/html',
                         }),
@@ -750,7 +744,7 @@
             }
         }
 
-        return copyWithExecCommand(plainText, htmlText);
+        return copyWithExecCommand(htmlText);
     }
 
     let copyTooltip = null;
@@ -851,7 +845,7 @@
             .map((entry) => `${getEntryLabel(entry)}: ${entry.title}`)
             .join('\n');
 
-        if (await writeClipboard(plainText, buildTableHtml(entries))) {
+        if (await writeClipboard(buildLinesHtml(entries))) {
             flashCopied(button, entries);
         }
     }
@@ -884,7 +878,7 @@
         copyButton.className = COPY_BUTTON_CLASS;
         copyButton.setAttribute(
             'aria-label',
-            'Copy Patch and related work items as a table',
+            'Copy Patch and related work items as linked lines',
         );
         copyButton.textContent = '\u29C9';
         copyButton.addEventListener('mousedown', (event) => {
@@ -903,14 +897,14 @@
         copyButton.addEventListener('mouseenter', () => {
             showCopyTooltip(
                 copyButton,
-                'Copy Patch and related work items as a table',
+                'Copy Patch and related work items as linked lines',
             );
         });
         copyButton.addEventListener('mouseleave', hideCopyTooltip);
         copyButton.addEventListener('focus', () => {
             showCopyTooltip(
                 copyButton,
-                'Copy Patch and related work items as a table',
+                'Copy Patch and related work items as linked lines',
             );
         });
         copyButton.addEventListener('blur', hideCopyTooltip);
