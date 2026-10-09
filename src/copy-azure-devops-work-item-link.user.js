@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Copy Azure DevOps work item link
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.7.12
+// @version      1.7.16
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/copy-azure-devops-work-item-link.user.js
-// @description  Adds a copy button beside the row context menu ("...") that copies the item and its related items as linked HTML lines; also strips work item type prefixes (Product Backlog Item, Carrier Data Release, Request, Bug) from copied work item titles.
+// @description  Copies selected work items as linked HTML lines via "Copy as HTML", adds a button to copy a Patch and its related items, and strips selected work item type prefixes from copied titles.
 // @match        http://tfs/*/_queries/*
 // @match        http://tfs01/*/_queries/*
 // @match        https://tfs/*/_queries/*
@@ -14,6 +14,7 @@
 // @match        https://tfs01/*/_workitems/*
 // @run-at       document-idle
 // @grant        none
+// @inject-into  page
 // @noframes
 // ==/UserScript==
 // Installation: import this file into Greasemonkey or Tampermonkey. Duplicate
@@ -39,7 +40,16 @@
 //    fails, the script falls back to expanding the row in the grid, reading the
 //    rendered descendants, and collapsing it back again.
 //
-// 2. "Copy work item title" (Shift+Alt+C) clean-up
+// 2. "Copy as HTML" / Ctrl+C in query results
+//    Copies only the selected work items, using the same linked-line format as
+//    the copy button (including "Patch" before Patch IDs), without the native
+//    table or additional query columns. Related items are not added. Azure
+//    DevOps copies via execCommand('copy'), sometimes from a temporary iframe,
+//    so the script wraps execCommand (including in same-origin frames) and
+//    replaces the clipboard immediately after the native copy. This requires
+//    running in the page context (@inject-into page).
+//
+// 3. "Copy work item title" (Shift+Alt+C) clean-up
 //    Azure DevOps copies work item titles as "<type> <id>: <title>". A capturing
 //    copy listener rewrites the clipboard so the type prefix is removed for
 //    Product Backlog Item, Carrier Data Release, Request and Bug work items
@@ -51,8 +61,9 @@
 // - Grid rows are absolutely positioned and recycled, so rows are always read
 //   from a list sorted by aria-rowindex, and row elements are re-resolved by
 //   work item id between expand/collapse passes.
-// - Clipboard writes prefer navigator.clipboard.write with an HTML flavour and
-//   fall back to document.execCommand('copy') with a temporary selection.
+// - Clipboard writes include HTML and plain-text flavours (plain text lets
+//   Windows clipboard history preview the items), prefer navigator.clipboard.write
+//   and fall back to document.execCommand('copy') with a temporary selection.
 // - If the "..." button uses a different class in another Azure DevOps version,
 //   add its selector to CONTEXT_MENU_SELECTORS.
 
@@ -636,6 +647,16 @@
         };
     }
 
+    function buildLinesText(entries) {
+        return entries
+            .map((entry) => `${getEntryLabel(entry)}: ${entry.title}`)
+            .join('\n');
+    }
+
+    function buildClipboardContent(entries) {
+        return { html: buildLinesHtml(entries), text: buildLinesText(entries) };
+    }
+
     function buildLinesHtml(entries) {
         return entries
             .map(
@@ -647,6 +668,189 @@
                     )}</a>: ${escapeHtml(entry.title)}<br/>`,
             )
             .join('');
+    }
+
+    const SELECTED_ROW_SELECTOR =
+        '[aria-selected="true"], .grid-row-selected, .selected';
+    const HTML_COPY_OVERRIDE_WINDOW = 10000;
+    const LOG_PREFIX = '[copy-azure-devops-work-item-link]';
+    let htmlCopyOverride = null;
+
+    function getSelectedRowEntries() {
+        return getAllRows()
+            .filter((row) => row.matches(SELECTED_ROW_SELECTOR))
+            .map(getRowEntry)
+            .filter((entry) => entry !== null);
+    }
+
+    function isCopyAsHtmlCommand(target) {
+        const activeId = target.getAttribute('aria-activedescendant');
+        const resolved =
+            (activeId && document.getElementById(activeId)) || target;
+        const command = resolved.closest(
+            '[role="menuitem"], .menu-item, button, a',
+        );
+        if (
+            !command ||
+            command.getAttribute('aria-disabled') === 'true' ||
+            command.matches(':disabled, .disabled')
+        ) {
+            return false;
+        }
+
+        const label = (
+            command.getAttribute('aria-label') ||
+            command.getAttribute('title') ||
+            command.textContent ||
+            ''
+        )
+            .replace(/\s+/g, ' ')
+            .trim();
+        return label.toLowerCase().startsWith('copy as html');
+    }
+
+    function isGridCopyShortcut(event) {
+        return (
+            event.key?.toLowerCase() === 'c' &&
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            !event.target.closest(
+                'input, textarea, select, [contenteditable=""], [contenteditable="true"]',
+            ) &&
+            Boolean(
+                event.target.closest(
+                    '.grid, [role="grid"], [role="treegrid"]',
+                ),
+            )
+        );
+    }
+
+    function prepareSelectedWorkItemCopy(event) {
+        if (!(event.target instanceof Element)) {
+            return;
+        }
+
+        const isCommand =
+            event.type !== 'keydown' ||
+            event.key === 'Enter' ||
+            event.key === ' '
+                ? isCopyAsHtmlCommand(event.target)
+                : false;
+        if (
+            !isCommand &&
+            !(event.type === 'keydown' && isGridCopyShortcut(event))
+        ) {
+            return;
+        }
+
+        const entries = getSelectedRowEntries();
+        if (entries.length === 0) {
+            console.info(`${LOG_PREFIX} No selected work item rows found.`);
+            return;
+        }
+
+        if (htmlCopyOverride) {
+            window.clearTimeout(htmlCopyOverride.timeout);
+        }
+
+        htmlCopyOverride = {
+            content: buildClipboardContent(entries),
+            timeout: window.setTimeout(() => {
+                htmlCopyOverride = null;
+            }, HTML_COPY_OVERRIDE_WINDOW),
+        };
+    }
+
+    function consumeHtmlCopyOverride() {
+        const override = htmlCopyOverride;
+        if (!override) {
+            return null;
+        }
+
+        window.clearTimeout(override.timeout);
+        htmlCopyOverride = null;
+        return override.content;
+    }
+
+    // Azure DevOps copies its HTML table with execCommand('copy'), sometimes
+    // from a temporary iframe whose copy event never reaches this window. Wrap
+    // execCommand in this window and in same-origin frames so the clipboard is
+    // replaced immediately afterward, while the user gesture is still active.
+    const patchedDocumentPrototypes = new WeakSet();
+
+    function patchExecCommand(win) {
+        let proto;
+        try {
+            proto = win?.Document?.prototype;
+        } catch {
+            return;
+        }
+
+        if (!proto || patchedDocumentPrototypes.has(proto)) {
+            return;
+        }
+
+        patchedDocumentPrototypes.add(proto);
+        const original = proto.execCommand;
+        proto.execCommand = function (command, ...args) {
+            const result = original.call(this, command, ...args);
+            if (
+                !scriptOwnedCopy &&
+                String(command).toLowerCase() === 'copy'
+            ) {
+                const content = consumeHtmlCopyOverride();
+                if (content !== null) {
+                    console.info(
+                        `${LOG_PREFIX} Replaced native copy:`,
+                        copyWithExecCommand(content),
+                    );
+                }
+            }
+
+            return result;
+        };
+    }
+
+    function patchFrameAccessor(property, getWindow) {
+        const descriptor = Object.getOwnPropertyDescriptor(
+            HTMLIFrameElement.prototype,
+            property,
+        );
+        if (!descriptor?.get) {
+            return;
+        }
+
+        Object.defineProperty(HTMLIFrameElement.prototype, property, {
+            ...descriptor,
+            get() {
+                const value = descriptor.get.call(this);
+                patchExecCommand(getWindow(value));
+                return value;
+            },
+        });
+    }
+
+    patchExecCommand(window);
+    patchFrameAccessor('contentWindow', (value) => value);
+    patchFrameAccessor('contentDocument', (value) => value?.defaultView);
+
+    // Covers a browser-native copy (Ctrl+C default action) in this document.
+    function overrideNativeCopyEvent(event) {
+        if (scriptOwnedCopy || !event.clipboardData) {
+            return;
+        }
+
+        const content = consumeHtmlCopyOverride();
+        if (content === null) {
+            return;
+        }
+
+        event.clipboardData.setData('text/html', content.html);
+        event.clipboardData.setData('text/plain', content.text);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        console.info(`${LOG_PREFIX} Replaced copy event data.`);
     }
 
     let scriptOwnedCopy = false;
@@ -694,9 +898,10 @@
         event.preventDefault();
     }
 
-    function copyWithExecCommand(htmlText) {
+    function copyWithExecCommand(content) {
         const onCopy = (event) => {
-            event.clipboardData.setData('text/html', htmlText);
+            event.clipboardData.setData('text/html', content.html);
+            event.clipboardData.setData('text/plain', content.text);
             event.preventDefault();
             // Keep Azure DevOps copy handlers from replacing the HTML flavour.
             event.stopImmediatePropagation();
@@ -707,7 +912,7 @@
         try {
             // A non-empty selection is required for execCommand('copy').
             const holder = document.createElement('span');
-            holder.innerHTML = htmlText;
+            holder.innerHTML = content.html;
             holder.style.position = 'fixed';
             holder.style.opacity = '0';
             document.body.appendChild(holder);
@@ -728,13 +933,16 @@
         }
     }
 
-    async function writeClipboard(htmlText) {
+    async function writeClipboard(content) {
         if (navigator.clipboard && typeof window.ClipboardItem === 'function') {
             try {
                 await navigator.clipboard.write([
                     new window.ClipboardItem({
-                        'text/html': new Blob([htmlText], {
+                        'text/html': new Blob([content.html], {
                             type: 'text/html',
+                        }),
+                        'text/plain': new Blob([content.text], {
+                            type: 'text/plain',
                         }),
                     }),
                 ]);
@@ -744,7 +952,7 @@
             }
         }
 
-        return copyWithExecCommand(htmlText);
+        return copyWithExecCommand(content);
     }
 
     let copyTooltip = null;
@@ -841,11 +1049,7 @@
             return;
         }
 
-        const plainText = entries
-            .map((entry) => `${getEntryLabel(entry)}: ${entry.title}`)
-            .join('\n');
-
-        if (await writeClipboard(buildLinesHtml(entries))) {
+        if (await writeClipboard(buildClipboardContent(entries))) {
             flashCopied(button, entries);
         }
     }
@@ -1022,4 +1226,8 @@
         }
     });
     document.addEventListener('copy', stripWorkItemTypePrefix, true);
+    window.addEventListener('copy', overrideNativeCopyEvent, true);
+    window.addEventListener('mousedown', prepareSelectedWorkItemCopy, true);
+    window.addEventListener('click', prepareSelectedWorkItemCopy, true);
+    window.addEventListener('keydown', prepareSelectedWorkItemCopy, true);
 })();
