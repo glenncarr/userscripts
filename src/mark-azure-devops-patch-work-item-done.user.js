@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mark Azure DevOps Patch work item Done
 // @namespace    https://github.com/glenncarr/userscripts
-// @version      1.3.1
+// @version      1.4.1
 // @downloadURL  https://raw.githubusercontent.com/glenncarr/userscripts/main/src/mark-azure-devops-patch-work-item-done.user.js
 // @description  Adds a button to top-level Patch rows in query results that sets the Patch and its Related Dev Complete Bugs / Product Backlog Items to Done without saving, so "Save Items" saves them all.
 // @match        http://tfs/*/_queries/*
@@ -39,6 +39,11 @@
 // Product Backlog Item that is not already Done (predecessor, successor,
 // parent, child and other link types are ignored). Nothing is saved; the
 // rows become dirty in the grid so a single "Save Items" click saves them all.
+//
+// Multiple selection: if the hovered Patch row is part of a selection of
+// several rows, the button acts on every selected top-level Patch. It is
+// all-or-nothing: if any selected Patch is blocked, the button is disabled and
+// its tooltip lists each blocked Patch and why.
 //
 // Work items that are not in the query results are skipped, because the grid's
 // "Save Items" only saves dirty work items present in the results. Work items
@@ -423,15 +428,7 @@
     // Evaluates the Patch from work items cached by the WorkItemManager (the
     // same objects the grid shows, including unsaved edits), loading missing
     // ones in the background. Returns undefined while work items are loading.
-    function getRowPatchWarning(row) {
-        let manager;
-        try {
-            manager = getWorkItemManager(getQueryResultGrid(row));
-        } catch (error) {
-            return `\u26A0 ${error?.message || error}`;
-        }
-
-        const patchId = getRowWorkItemId(row);
+    function getPatchIdWarning(manager, patchId) {
         const patch = manager.getWorkItem(patchId);
         if (!patch) {
             if (hasRecentLoadFailure(patchId)) {
@@ -459,9 +456,80 @@
         return getPatchWarning(patch, related);
     }
 
+    // Returns the Patch ids the button acts on: all selected Patches when the
+    // row is part of a multi-selection, otherwise just the row's Patch. Ids
+    // are returned as null while selected work items are still loading.
+    function getTargetPatchIds(row, manager) {
+        const rowId = getRowWorkItemId(row);
+        const grid = getQueryResultGrid(row);
+        const selectedIds = (grid?.getSelectedWorkItemIds?.() || []).map(Number);
+        if (selectedIds.length < 2 || !selectedIds.includes(rowId)) {
+            return [rowId];
+        }
+
+        const missing = selectedIds.filter((id) => !manager.getWorkItem(id));
+        if (missing.length > 0) {
+            requestWorkItems(manager, missing);
+            return missing.some((id) => !hasRecentLoadFailure(id))
+                ? null
+                : selectedIds;
+        }
+
+        const renderedRows = new Map(
+            Array.from(row.closest(GRID_SELECTOR).querySelectorAll(ROW_SELECTOR))
+                .map((candidate) => [getRowWorkItemId(candidate), candidate]),
+        );
+        return selectedIds.filter((id) => {
+            const renderedRow = renderedRows.get(id);
+            return (
+                isPatchType(manager.getWorkItem(id).getFieldValue(WORK_ITEM_TYPE_FIELD)) &&
+                (!renderedRow || getRowLevel(renderedRow) === 1)
+            );
+        });
+    }
+
+    function getRowPatchWarning(row) {
+        let manager;
+        try {
+            manager = getWorkItemManager(getQueryResultGrid(row));
+        } catch (error) {
+            return `\u26A0 ${error?.message || error}`;
+        }
+
+        const patchIds = getTargetPatchIds(row, manager);
+        if (patchIds === null) {
+            return undefined;
+        }
+
+        if (patchIds.length === 1) {
+            return getPatchIdWarning(manager, patchIds[0]);
+        }
+
+        let loading = false;
+        const blocked = [];
+        patchIds.forEach((id) => {
+            const warning = getPatchIdWarning(manager, id);
+            if (warning === undefined) {
+                loading = true;
+            } else if (warning) {
+                blocked.push(
+                    `Patch ${id}: ${warning.replace(/^\u26A0 /, '').replace(/\n/g, '\n    ')}`,
+                );
+            }
+        });
+
+        if (blocked.length > 0) {
+            return [
+                `\u26A0 ${blocked.length} of ${patchIds.length} selected Patches cannot be set to Done, so none will be changed:`,
+                ...blocked,
+            ].join('\n');
+        }
+
+        return loading ? undefined : null;
+    }
+
     async function markPatchDone(row) {
-        const patchId = getRowWorkItemId(row);
-        if (patchId === null) {
+        if (getRowWorkItemId(row) === null) {
             return null;
         }
 
@@ -471,15 +539,25 @@
             ? new Set(grid.getUnfilteredWorkItemIds().map(Number))
             : null;
 
-        const [patch] = await getWorkItems(manager, [patchId]);
-        const related = (
-            await getWorkItems(manager, getRelatedWorkItemIds(patch))
-        ).filter(Boolean);
+        const patchIds = getTargetPatchIds(row, manager);
+        if (patchIds === null) {
+            throw new Error('Selected work items are still loading.');
+        }
 
-        // Re-check in case anything changed since the button was enabled.
-        const warning = getPatchWarning(patch, related);
-        if (warning) {
-            throw new Error(warning);
+        const patches = await getWorkItems(manager, patchIds);
+        const targets = [];
+        for (const patch of patches) {
+            const related = (
+                await getWorkItems(manager, getRelatedWorkItemIds(patch))
+            ).filter(Boolean);
+
+            // Re-check in case anything changed since the button was enabled.
+            const warning = getPatchWarning(patch, related);
+            if (warning) {
+                throw new Error(`Patch ${patch.id}: ${warning}`);
+            }
+
+            targets.push({ patch, related });
         }
 
         const summary = {
@@ -490,35 +568,43 @@
             notAllowed: [],
             invalid: [],
         };
+        const seen = new Set();
 
-        [patch, ...related].forEach((workItem) => {
-            if (workItem !== patch) {
-                if (!isQualifiedRelatedWorkItem(workItem)) {
-                    summary.ignoredType.push(workItem);
+        targets.forEach(({ patch, related }) => {
+            [patch, ...related].forEach((workItem) => {
+                if (seen.has(workItem.id)) {
+                    return;
+                }
+                seen.add(workItem.id);
+
+                if (workItem !== patch) {
+                    if (!isQualifiedRelatedWorkItem(workItem)) {
+                        summary.ignoredType.push(workItem);
+                        return;
+                    }
+
+                    if (getState(workItem) === DONE_STATE) {
+                        summary.alreadyDone.push(workItem);
+                        return;
+                    }
+                }
+
+                if (resultIds && !resultIds.has(workItem.id)) {
+                    summary.notInResults.push(workItem);
                     return;
                 }
 
-                if (getState(workItem) === DONE_STATE) {
-                    summary.alreadyDone.push(workItem);
+                if (!canTransitionToDone(workItem)) {
+                    summary.notAllowed.push(workItem);
                     return;
                 }
-            }
 
-            if (resultIds && !resultIds.has(workItem.id)) {
-                summary.notInResults.push(workItem);
-                return;
-            }
-
-            if (!canTransitionToDone(workItem)) {
-                summary.notAllowed.push(workItem);
-                return;
-            }
-
-            workItem.setFieldValue(STATE_FIELD, DONE_STATE);
-            summary.changed.push(workItem);
-            if (!workItem.isValid()) {
-                summary.invalid.push(workItem);
-            }
+                workItem.setFieldValue(STATE_FIELD, DONE_STATE);
+                summary.changed.push(workItem);
+                if (!workItem.isValid()) {
+                    summary.invalid.push(workItem);
+                }
+            });
         });
 
         return summary;
@@ -614,11 +700,28 @@
     let button = null;
     let currentRow = null;
     let currentWarning = null;
+    let currentLabel = BUTTON_LABEL;
     let hoveredRow = null;
     let busy = false;
 
+    function getRowButtonLabel(row) {
+        try {
+            const patchIds = getTargetPatchIds(
+                row,
+                getWorkItemManager(getQueryResultGrid(row)),
+            );
+            if (patchIds && patchIds.length > 1) {
+                return `Set all ${patchIds.length} selected Patches and their related work items to Done (not saved)`;
+            }
+        } catch (error) {
+            // Fall back to the single Patch label.
+        }
+
+        return BUTTON_LABEL;
+    }
+
     function getButtonTooltipText() {
-        return currentWarning || BUTTON_LABEL;
+        return currentWarning || currentLabel;
     }
 
     function showButtonTooltip() {
@@ -766,12 +869,15 @@
                 ? 'Checking Patch and related work items\u2026'
                 : rowWarning;
         const warningChanged = warning !== currentWarning;
+        const label = getRowButtonLabel(row);
+        const tooltipChanged = warningChanged || label !== currentLabel;
         currentWarning = warning;
+        currentLabel = label;
         doneButton.classList.toggle('is-disabled', Boolean(warning));
         doneButton.setAttribute('aria-disabled', String(Boolean(warning)));
         doneButton.setAttribute('aria-label', getButtonTooltipText());
         if (
-            warningChanged &&
+            tooltipChanged &&
             doneButton.matches(':hover') &&
             !tooltipMouseMoveListener
         ) {
