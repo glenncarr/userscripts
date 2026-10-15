@@ -1,4 +1,4 @@
-# Copilot instructions
+# Agent instructions
 
 ## Keep the README in sync
 
